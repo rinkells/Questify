@@ -18,6 +18,8 @@ class XPRewardHandler:
         character = Character.objects.get(user_id=event.user_id)
         character.xp += quest.xp_reward
         character.save(update_fields=('xp',))
+        if event.result is not None:
+            event.result.xp_gained = quest.xp_reward
 
 
 class StatUpdateHandler:
@@ -33,6 +35,8 @@ class StatUpdateHandler:
             )
             stat.value += reward.amount
             stat.save(update_fields=('value',))
+            if event.result is not None:
+                event.result.stats_updated[reward.stat_type.name] = stat.value
 
 
 class LevelCheckHandler:
@@ -45,6 +49,9 @@ class LevelCheckHandler:
             character.level += 1
             character.xp_to_next_level = round(100 * character.level**1.2)
             character.save(update_fields=('level', 'xp_to_next_level'))
+            if event.result is not None:
+                event.result.leveled_up = True
+                event.result.new_level = character.level
             dispatcher.dispatch(
                 LevelUpEvent(
                     user_id=event.user_id,

@@ -114,6 +114,6 @@ class QuestServiceTests(TestCase):
 
         completion = QuestService.complete_quest(quest.id)
 
-        self.assertEqual(completion.status, 'completed')
+        self.assertEqual(completion['xp_gained'], 40)
         user.character.refresh_from_db()
         self.assertEqual(user.character.xp, 40)
