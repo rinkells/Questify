@@ -93,3 +93,34 @@ class QuestCompletion(models.Model):
 
 	def __str__(self):
 		return f'{self.quest}: {self.status}'
+
+
+class Streak(models.Model):
+	user = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.CASCADE,
+		related_name='streaks',
+	)
+	quest_category = models.ForeignKey(
+		QuestCategory,
+		on_delete=models.CASCADE,
+		related_name='streaks',
+		null=True,
+		blank=True,
+	)
+	current_length = models.PositiveIntegerField(default=0)
+	longest_length = models.PositiveIntegerField(default=0)
+	freezes_available = models.PositiveIntegerField(default=0)
+	last_completed_date = models.DateField(null=True, blank=True)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=('user', 'quest_category'),
+				name='unique_user_quest_category_streak',
+			),
+		]
+
+	def __str__(self):
+		category = self.quest_category or 'daily activity'
+		return f'{self.user} - {category}: {self.current_length}'

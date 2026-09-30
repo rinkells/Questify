@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Quest, QuestCategory, QuestCompletion, QuestStatReward
+from .models import Quest, QuestCategory, QuestCompletion, QuestStatReward, Streak
 
 
 @admin.register(QuestCategory)
@@ -33,3 +33,16 @@ class QuestStatRewardAdmin(admin.ModelAdmin):
 class QuestCompletionAdmin(admin.ModelAdmin):
 	list_display = ('quest', 'completed_at', 'status')
 	list_filter = ('status', 'completed_at')
+
+
+@admin.register(Streak)
+class StreakAdmin(admin.ModelAdmin):
+	list_display = (
+		'user',
+		'quest_category',
+		'current_length',
+		'longest_length',
+		'freezes_available',
+		'last_completed_date',
+	)
+	list_filter = ('quest_category', 'last_completed_date')

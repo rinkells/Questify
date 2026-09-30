@@ -14,6 +14,7 @@ from .event_types import Event, LevelUpEvent, QuestCompletedEvent
 from .handlers import (
     LevelCheckHandler,
     LoggingHandler,
+    StreakFreezeHandler,
     StatUpdateHandler,
     XPRewardHandler,
 )
@@ -100,6 +101,16 @@ class HandlerTests(TestCase):
         LoggingHandler().handle(self.event)
 
         logger.info.assert_called_once()
+
+    @patch('events.handlers.StreakService.grant_freeze')
+    def test_streak_freeze_handler_grants_freeze_every_five_levels(
+        self,
+        grant_freeze,
+    ):
+        StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 4, 5))
+        StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 5, 6))
+
+        grant_freeze.assert_called_once_with(self.user.id)
 
 
 class QuestServiceTests(TestCase):
