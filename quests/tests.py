@@ -1,8 +1,10 @@
 import pytest
+from datetime import date, timedelta
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
-from .models import Quest
+from .models import Quest, Streak
+from .services import StreakService
 
 
 User = get_user_model()
@@ -72,3 +74,61 @@ def test_cannot_complete_foreign_quest(api_client, other_user, quest):
 	response = api_client.post(f'/api/quests/{quest.id}/complete/')
 
 	assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_streak_continues_on_next_day(user):
+	start = date(2026, 9, 28)
+
+	StreakService.record_completion(user, start)
+	streak = StreakService.record_completion(user, start + timedelta(days=1))
+
+	assert streak.current_length == 2
+	assert streak.longest_length == 2
+	assert streak.last_completed_date == date(2026, 9, 29)
+
+
+@pytest.mark.django_db
+def test_streak_uses_freeze_for_one_missed_day(user):
+	start = date(2026, 9, 28)
+	StreakService.record_completion(user, start)
+	streak = Streak.objects.get(user=user, quest_category=None)
+	streak.freezes_available = 1
+	streak.save(update_fields=('freezes_available',))
+
+	streak = StreakService.record_completion(user, start + timedelta(days=2))
+
+	assert streak.current_length == 2
+	assert streak.longest_length == 2
+	assert streak.freezes_available == 0
+
+
+@pytest.mark.django_db
+def test_streak_resets_after_missed_day_without_freeze(user):
+	start = date(2026, 9, 28)
+	StreakService.record_completion(user, start)
+	streak = StreakService.record_completion(user, start + timedelta(days=2))
+
+	assert streak.current_length == 1
+	assert streak.longest_length == 1
+
+
+@pytest.mark.django_db
+def test_same_date_is_idempotent_and_dates_are_timezone_safe(user):
+	completion_date = date(2026, 9, 28)
+	first = StreakService.record_completion(user, completion_date)
+	second = StreakService.record_completion(user, completion_date)
+
+	assert first.pk == second.pk
+	assert second.current_length == 1
+	assert second.last_completed_date == completion_date
+
+
+@pytest.mark.django_db
+def test_long_gap_resets_streak(user):
+	start = date(2026, 9, 28)
+	StreakService.record_completion(user, start)
+	streak = StreakService.record_completion(user, start + timedelta(days=4))
+
+	assert streak.current_length == 1
+	assert streak.longest_length == 1

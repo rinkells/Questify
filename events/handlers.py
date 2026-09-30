@@ -2,6 +2,7 @@ import logging
 
 from core.models import Character, Stat
 from quests.models import Quest, QuestStatReward
+from quests.services import StreakService
 
 from .dispatcher import dispatcher
 from .event_types import Event, LevelUpEvent, QuestCompletedEvent
@@ -59,6 +60,14 @@ class LevelCheckHandler:
                     new_level=character.level,
                 )
             )
+
+
+class StreakFreezeHandler:
+    def handle(self, event: Event):
+        if not isinstance(event, LevelUpEvent):
+            return
+        if event.new_level % 5 == 0:
+            StreakService.grant_freeze(event.user_id)
 
 
 class LoggingHandler:
