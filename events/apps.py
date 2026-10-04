@@ -12,6 +12,7 @@ class EventsConfig(AppConfig):
             StatUpdateHandler,
             XPRewardHandler,
         )
+        from achievements.handlers import AchievementCheckHandler
         from .dispatcher import dispatcher
         from .event_types import Event, LevelUpEvent, QuestCompletedEvent
 
@@ -19,4 +20,9 @@ class EventsConfig(AppConfig):
         dispatcher.register(QuestCompletedEvent, StatUpdateHandler().handle)
         dispatcher.register(QuestCompletedEvent, LevelCheckHandler().handle)
         dispatcher.register(LevelUpEvent, StreakFreezeHandler().handle)
+        dispatcher.register(
+            QuestCompletedEvent,
+            AchievementCheckHandler().handle,
+        )
+        dispatcher.register(LevelUpEvent, AchievementCheckHandler().handle)
         dispatcher.register(Event, LoggingHandler().handle)

@@ -20,6 +20,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
 from core.views import CharacterView
+from achievements.views import AchievementListView, UnlockedAchievementListView
 from quests.views import QuestCategoryViewSet, QuestViewSet
 
 
@@ -31,6 +32,16 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
     path('api/character/', CharacterView.as_view(), name='character'),
+    path(
+        'api/achievements/',
+        AchievementListView.as_view(),
+        name='achievement-list',
+    ),
+    path(
+        'api/achievements/unlocked/',
+        UnlockedAchievementListView.as_view(),
+        name='achievement-unlocked-list',
+    ),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(
         'api/docs/',
