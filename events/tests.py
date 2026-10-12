@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone as datetime_timezone
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
@@ -6,14 +6,15 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import Character, Stat, StatType
-from quests.models import Quest, QuestStatReward
+from quests.models import Quest, QuestStatReward, Streak
 from quests.services import QuestService
 
 from .dispatcher import EventDispatcher
-from .event_types import Event, LevelUpEvent, QuestCompletedEvent
+from .event_types import Event, EventResult, LevelUpEvent, QuestCompletedEvent
 from .handlers import (
     LevelCheckHandler,
     LoggingHandler,
+    StreakUpdateHandler,
     StreakFreezeHandler,
     StatUpdateHandler,
     XPRewardHandler,
@@ -101,6 +102,40 @@ class HandlerTests(TestCase):
         LoggingHandler().handle(self.event)
 
         logger.info.assert_called_once()
+
+    def test_streak_update_handler_uses_event_date_and_updates_result(self):
+        event = QuestCompletedEvent(
+            quest_id=self.quest.id,
+            user_id=self.user.id,
+            completed_at=datetime(
+                2026,
+                10,
+                12,
+                tzinfo=datetime_timezone.utc,
+            ),
+        )
+
+        StreakUpdateHandler().handle(event)
+
+        streak = Streak.objects.get(user=self.user, quest_category=None)
+        self.assertEqual(streak.last_completed_date.isoformat(), '2026-10-12')
+
+    def test_streak_update_handler_updates_event_result(self):
+        event = QuestCompletedEvent(
+            quest_id=self.quest.id,
+            user_id=self.user.id,
+            completed_at=datetime(
+                2026,
+                10,
+                12,
+                tzinfo=datetime_timezone.utc,
+            ),
+            result=EventResult(),
+        )
+
+        StreakUpdateHandler().handle(event)
+
+        self.assertEqual(event.result.streak_length, 1)
 
     @patch('events.handlers.StreakService.grant_freeze')
     def test_streak_freeze_handler_grants_freeze_every_five_levels(

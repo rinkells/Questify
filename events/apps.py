@@ -9,6 +9,7 @@ class EventsConfig(AppConfig):
             LevelCheckHandler,
             LoggingHandler,
             StreakFreezeHandler,
+            StreakUpdateHandler,
             StatUpdateHandler,
             XPRewardHandler,
         )
@@ -19,6 +20,7 @@ class EventsConfig(AppConfig):
         dispatcher.register(QuestCompletedEvent, XPRewardHandler().handle)
         dispatcher.register(QuestCompletedEvent, StatUpdateHandler().handle)
         dispatcher.register(QuestCompletedEvent, LevelCheckHandler().handle)
+        dispatcher.register(QuestCompletedEvent, StreakUpdateHandler().handle)
         dispatcher.register(LevelUpEvent, StreakFreezeHandler().handle)
         dispatcher.register(
             QuestCompletedEvent,

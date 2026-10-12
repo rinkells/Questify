@@ -135,6 +135,29 @@ def test_quest_completion_unlocks_achievement_and_publishes_event(
 
 
 @pytest.mark.django_db
+def test_streak_achievement_unlocks_after_quest_completion(achievement_user):
+    achievement = Achievement.objects.create(
+        name='Daily starter',
+        condition_type=Achievement.ConditionType.STREAK_LENGTH,
+        condition_config={'threshold': 1},
+    )
+    quest = Quest.objects.create(
+        user=achievement_user,
+        title='Daily quest',
+        quest_type=Quest.QuestType.DAILY,
+        xp_reward=1,
+    )
+
+    result = QuestService.complete_quest(quest.id, achievement_user)
+
+    assert result['streak_length'] == 1
+    assert UserAchievement.objects.filter(
+        user=achievement_user,
+        achievement=achievement,
+    ).exists()
+
+
+@pytest.mark.django_db
 
 def test_hidden_locked_achievement_is_masked(achievement_user):
     Achievement.objects.create(

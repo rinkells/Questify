@@ -63,8 +63,24 @@ def test_complete_quest_returns_xp(api_client, user, quest):
 	assert response.status_code == 200
 	assert response.data['xp_gained'] == 35
 	assert response.data['leveled_up'] is False
+	assert response.data['streak_length'] == 1
 	user.character.refresh_from_db()
 	assert user.character.xp == 35
+
+
+@pytest.mark.django_db
+def test_repeating_completion_same_day_does_not_increase_streak(
+	api_client,
+	user,
+	quest,
+):
+	api_client.force_authenticate(user=user)
+
+	first_response = api_client.post(f'/api/quests/{quest.id}/complete/')
+	second_response = api_client.post(f'/api/quests/{quest.id}/complete/')
+
+	assert first_response.data['streak_length'] == 1
+	assert second_response.data['streak_length'] == 1
 
 
 @pytest.mark.django_db

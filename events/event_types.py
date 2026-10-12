@@ -10,6 +10,7 @@ class EventResult:
     new_level: int | None = None
     stats_updated: dict[str, int] | dict[Any, int] = None
     achievements_unlocked: list[int] = None
+    streak_length: int = 0
 
     def __post_init__(self):
         if self.stats_updated is None:
@@ -24,6 +25,7 @@ class EventResult:
             'new_level': self.new_level,
             'stats_updated': self.stats_updated,
             'achievements_unlocked': self.achievements_unlocked,
+            'streak_length': self.streak_length,
         }
 
 
