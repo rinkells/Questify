@@ -62,6 +62,18 @@ class LevelCheckHandler:
             )
 
 
+class StreakUpdateHandler:
+    def handle(self, event: Event):
+        if not isinstance(event, QuestCompletedEvent):
+            return
+        streak = StreakService.record_completion(
+            event.user_id,
+            event.completed_at.date(),
+        )
+        if event.result is not None:
+            event.result.streak_length = streak.current_length
+
+
 class StreakFreezeHandler:
     def handle(self, event: Event):
         if not isinstance(event, LevelUpEvent):

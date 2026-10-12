@@ -35,3 +35,4 @@ class QuestCompleteResponseSerializer(serializers.Serializer):
     achievements_unlocked = serializers.ListField(
         child=serializers.IntegerField(),
     )
+    streak_length = serializers.IntegerField()
