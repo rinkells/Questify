@@ -11,7 +11,7 @@ from .serializers import (
 	QuestCompleteResponseSerializer,
 	QuestSerializer,
 )
-from .services import QuestService
+from .services import QuestAlreadyCompletedError, QuestService
 
 
 class OwnerViewSetMixin:
@@ -35,7 +35,13 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 	@action(detail=True, methods=('post',))
 	def complete(self, request, pk=None):
 		self.get_object()
-		result = QuestService.complete_quest(pk, request.user)
+		try:
+			result = QuestService.complete_quest(pk, request.user)
+		except QuestAlreadyCompletedError as exc:
+			return Response(
+				{'detail': str(exc)},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
 		return Response(QuestCompleteResponseSerializer(result).data)
 
 	@action(detail=True, methods=('post',))

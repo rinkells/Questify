@@ -13,6 +13,10 @@ from .models import Quest, QuestCompletion, Streak
 User = get_user_model()
 
 
+class QuestAlreadyCompletedError(ValueError):
+    pass
+
+
 class QuestService:
     @staticmethod
     @transaction.atomic
@@ -23,6 +27,15 @@ class QuestService:
             user = quest.user
         else:
             quest = quest_queryset.get(pk=quest_id, user=user)
+        if (
+            quest.quest_type == Quest.QuestType.ONE_TIME
+            and quest.completions.filter(
+                status=QuestCompletion.CompletionStatus.COMPLETED,
+            ).exists()
+        ):
+            raise QuestAlreadyCompletedError(
+                f'Quest {quest_id} has already been completed.'
+            )
         completion = QuestCompletion.objects.create(
             quest=quest,
             status=QuestCompletion.CompletionStatus.COMPLETED,
@@ -49,6 +62,9 @@ class QuestService:
 
     @staticmethod
     def create_quest(user, **data):
+        category = data.get('category')
+        if category is not None and category.user_id != user.id:
+            raise ValueError('Category must belong to the current user.')
         return Quest.objects.create(user=user, **data)
 
 
