@@ -6,8 +6,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import Character, Stat, StatType
-from quests.models import Quest, QuestStatReward, Streak
+from quests.models import Quest, QuestCompletion, QuestStatReward, Streak
 from quests.services import QuestService
+from achievements.models import Achievement, UserAchievement
 
 from .dispatcher import EventDispatcher
 from .event_types import Event, EventResult, LevelUpEvent, QuestCompletedEvent
@@ -37,15 +38,16 @@ class EventDispatcherTests(TestCase):
 
         self.assertEqual(calls, ['first', 'second'])
 
-    def test_dispatch_isolates_handler_errors(self):
+    def test_dispatch_logs_and_propagates_handler_errors(self):
         dispatcher = EventDispatcher()
         successful_handler = Mock()
         dispatcher.register(Event, Mock(side_effect=RuntimeError('expected')))
         dispatcher.register(Event, successful_handler)
 
-        dispatcher.dispatch(Event())
+        with self.assertRaises(RuntimeError):
+            dispatcher.dispatch(Event())
 
-        successful_handler.assert_called_once()
+        successful_handler.assert_not_called()
 
 
 class HandlerTests(TestCase):
@@ -146,6 +148,55 @@ class HandlerTests(TestCase):
         StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 5, 6))
 
         grant_freeze.assert_called_once_with(self.user.id)
+
+    @patch(
+        'events.handlers.StreakService.record_completion',
+        side_effect=RuntimeError('streak failed'),
+    )
+    def test_failed_handler_rolls_back_quest_completion_side_effects(
+        self,
+        record_completion,
+    ):
+        stat_type = StatType.objects.create(
+            name='HEA',
+            display_name='Health',
+            icon='heart',
+        )
+        QuestStatReward.objects.create(
+            quest=self.quest,
+            stat_type=stat_type,
+            amount=4,
+        )
+        achievement = Achievement.objects.create(
+            name='XP achievement',
+            condition_type='total_xp',
+            condition_config={'threshold': 1},
+        )
+
+        with self.assertRaises(RuntimeError):
+            QuestService.complete_quest(self.quest.id, self.user)
+
+        self.assertFalse(
+            QuestCompletion.objects.filter(quest=self.quest).exists()
+        )
+        self.character.refresh_from_db()
+        self.assertEqual(self.character.xp, 0)
+        self.assertFalse(
+            Stat.objects.filter(
+                character=self.character,
+                stat_type=stat_type,
+            ).exists()
+        )
+        self.assertFalse(
+            Streak.objects.filter(user=self.user).exists()
+        )
+        self.assertFalse(
+            UserAchievement.objects.filter(
+                user=self.user,
+                achievement=achievement,
+            ).exists()
+        )
+        record_completion.assert_called_once()
 
 
 class QuestServiceTests(TestCase):

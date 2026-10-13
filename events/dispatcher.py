@@ -23,5 +23,6 @@ class EventDispatcher:
                     handler,
                     type(event).__name__,
                 )
+                raise
 
 dispatcher = EventDispatcher()
