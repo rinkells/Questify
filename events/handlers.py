@@ -16,7 +16,7 @@ class XPRewardHandler:
         if not isinstance(event, QuestCompletedEvent):
             return
         quest = Quest.objects.get(pk=event.quest_id)
-        character = Character.objects.get(user_id=event.user_id)
+        character = Character.objects.select_for_update().get(user_id=event.user_id)
         character.xp += quest.xp_reward
         character.save(update_fields=('xp',))
         if event.result is not None:
@@ -27,10 +27,10 @@ class StatUpdateHandler:
     def handle(self, event: Event):
         if not isinstance(event, QuestCompletedEvent):
             return
-        character = Character.objects.get(user_id=event.user_id)
+        character = Character.objects.select_for_update().get(user_id=event.user_id)
         rewards = QuestStatReward.objects.filter(quest_id=event.quest_id)
         for reward in rewards:
-            stat, _ = Stat.objects.get_or_create(
+            stat, _ = Stat.objects.select_for_update().get_or_create(
                 character=character,
                 stat_type=reward.stat_type,
             )
@@ -44,7 +44,7 @@ class LevelCheckHandler:
     def handle(self, event: Event):
         if not isinstance(event, QuestCompletedEvent):
             return
-        character = Character.objects.get(user_id=event.user_id)
+        character = Character.objects.select_for_update().get(user_id=event.user_id)
         while character.xp >= character.xp_to_next_level:
             old_level = character.level
             character.level += 1

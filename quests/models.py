@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.validators import MaxValueValidator
 from django.db import models
 
 from core.models import StatType
@@ -38,7 +39,7 @@ class Quest(models.Model):
 	title = models.CharField(max_length=255)
 	description = models.TextField(blank=True, null=True)
 	quest_type = models.CharField(max_length=20, choices=QuestType.choices)
-	xp_reward = models.PositiveIntegerField()
+	xp_reward = models.PositiveIntegerField(validators=[MaxValueValidator(1_000_000)])
 	is_active = models.BooleanField(default=True)
 	deadline = models.DateTimeField(null=True, blank=True)
 	created_at = models.DateTimeField(auto_now_add=True)
@@ -118,6 +119,7 @@ class Streak(models.Model):
 			models.UniqueConstraint(
 				fields=('user', 'quest_category'),
 				name='unique_user_quest_category_streak',
+				nulls_distinct=False,
 			),
 		]
 

@@ -1,7 +1,8 @@
 from django.db import transaction
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from events.dispatcher import dispatcher
@@ -27,6 +28,26 @@ class QuestService:
             user = quest.user
         else:
             quest = quest_queryset.get(pk=quest_id, user=user)
+        now = timezone.now()
+        if not quest.is_active:
+            raise ValidationError('This quest is inactive and cannot be completed.')
+        if quest.deadline is not None and quest.deadline < now:
+            raise ValidationError('This quest deadline has passed.')
+        if quest.quest_type in (Quest.QuestType.DAILY, Quest.QuestType.HABIT):
+            today = timezone.localtime(now).date()
+            day_start = timezone.make_aware(datetime.combine(today, time.min))
+            next_day_start = timezone.make_aware(
+                datetime.combine(today + timedelta(days=1), time.min)
+            )
+            if QuestCompletion.objects.filter(
+                quest=quest,
+                status=QuestCompletion.CompletionStatus.COMPLETED,
+                completed_at__gte=day_start,
+                completed_at__lt=next_day_start,
+            ).exists():
+                raise ValidationError(
+                    'This daily or habit quest has already been completed today.'
+                )
         if (
             quest.quest_type == Quest.QuestType.ONE_TIME
             and quest.completions.filter(
@@ -72,6 +93,9 @@ class StreakService:
     @staticmethod
     def _get_general_streak(user):
         user_id = getattr(user, 'pk', user)
+        # Serialize creation and updates for NULL-category streaks per user.
+        from core.models import Character
+        Character.objects.select_for_update().get(user_id=user_id)
         streak, _ = Streak.objects.get_or_create(
             user_id=user_id,
             quest_category=None,
@@ -79,6 +103,7 @@ class StreakService:
         return streak
 
     @staticmethod
+    @transaction.atomic
     def record_completion(user, completion_date: date):
         if not isinstance(completion_date, date):
             raise TypeError('completion_date must be a date')
@@ -109,6 +134,7 @@ class StreakService:
         return streak
 
     @staticmethod
+    @transaction.atomic
     def grant_freeze(user):
         streak = StreakService._get_general_streak(user)
         streak.freezes_available += 1

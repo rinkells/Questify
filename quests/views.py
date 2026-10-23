@@ -1,4 +1,5 @@
 from drf_spectacular.utils import extend_schema
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -37,9 +38,10 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 		self.get_object()
 		try:
 			result = QuestService.complete_quest(pk, request.user)
-		except QuestAlreadyCompletedError as exc:
+		except (QuestAlreadyCompletedError, DjangoValidationError) as exc:
+			message = exc.messages if isinstance(exc, DjangoValidationError) else str(exc)
 			return Response(
-				{'detail': str(exc)},
+				{'detail': message},
 				status=status.HTTP_400_BAD_REQUEST,
 			)
 		return Response(QuestCompleteResponseSerializer(result).data)

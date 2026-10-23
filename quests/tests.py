@@ -107,7 +107,7 @@ def test_one_time_quest_rejects_repeated_completion(
 
 
 @pytest.mark.django_db
-def test_daily_quest_can_be_completed_repeatedly(api_client, user):
+def test_daily_quest_cannot_be_completed_repeatedly(api_client, user):
 	quest = Quest.objects.create(
 		user=user,
 		title='Daily API quest',
@@ -120,8 +120,8 @@ def test_daily_quest_can_be_completed_repeatedly(api_client, user):
 	second_response = api_client.post(f'/api/quests/{quest.id}/complete/')
 
 	assert first_response.status_code == 200
-	assert second_response.status_code == 200
-	assert quest.completions.count() == 2
+	assert second_response.status_code == 400
+	assert quest.completions.count() == 1
 
 
 @pytest.mark.django_db
