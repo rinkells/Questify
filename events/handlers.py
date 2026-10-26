@@ -31,16 +31,41 @@ class StatUpdateHandler:
         if not isinstance(event, QuestCompletedEvent):
             return
         character = Character.objects.select_for_update().get(user_id=event.user_id)
-        rewards = QuestStatReward.objects.filter(quest_id=event.quest_id)
-        for reward in rewards:
-            stat, _ = Stat.objects.select_for_update().get_or_create(
+        rewards = list(
+            QuestStatReward.objects.filter(quest_id=event.quest_id)
+            .select_related('stat_type')
+            .order_by('pk')
+        )
+        if not rewards:
+            return
+
+        # A constant number of queries however many rewards the quest has.
+        # The character row is locked, so no one else can create these stats.
+        stats = {
+            stat.stat_type_id: stat
+            for stat in Stat.objects.select_for_update().filter(
                 character=character,
-                stat_type=reward.stat_type,
+                stat_type_id__in={reward.stat_type_id for reward in rewards},
             )
+        }
+        new_stats = {}
+        for reward in rewards:
+            stat = stats.get(reward.stat_type_id)
+            if stat is None:
+                stat = stats[reward.stat_type_id] = new_stats[reward.stat_type_id] = Stat(
+                    character=character,
+                    stat_type=reward.stat_type,
+                    value=0,
+                )
             stat.value += reward.amount
-            stat.save(update_fields=('value',))
             if event.result is not None:
                 event.result.stats_updated[reward.stat_type.name] = stat.value
+
+        if new_stats:
+            Stat.objects.bulk_create(new_stats.values())
+        existing = [s for s in stats.values() if s.stat_type_id not in new_stats]
+        if existing:
+            Stat.objects.bulk_update(existing, ['value'])
 
 
 class LevelCheckHandler:
