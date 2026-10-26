@@ -126,7 +126,11 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			QuestAlreadyFailedError,
 			DjangoValidationError,
 		) as exc:
-			message = exc.messages if isinstance(exc, DjangoValidationError) else str(exc)
+			message = (
+				' '.join(exc.messages)
+				if isinstance(exc, DjangoValidationError)
+				else str(exc)
+			)
 			return Response(
 				{'detail': message},
 				status=status.HTTP_400_BAD_REQUEST,
@@ -148,7 +152,11 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			QuestAlreadyFailedError,
 			DjangoValidationError,
 		) as exc:
-			message = exc.messages if isinstance(exc, DjangoValidationError) else str(exc)
+			message = (
+				' '.join(exc.messages)
+				if isinstance(exc, DjangoValidationError)
+				else str(exc)
+			)
 			return Response(
 				{'detail': message},
 				status=status.HTTP_400_BAD_REQUEST,

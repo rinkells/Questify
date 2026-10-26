@@ -64,6 +64,43 @@ class CharacterSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def update(self, instance, validated_data):
+        old_timezone = instance.timezone
+        instance = super().update(instance, validated_data)
+        if instance.timezone != old_timezone:
+            self._realign_streak(instance)
+        return instance
+
+    @staticmethod
+    def _realign_streak(character):
+        """Re-express the streak's last day in the character's new timezone.
+
+        Streak gaps are measured in the current timezone. Leaving the stored
+        date in the old zone would let a timezone switch shrink a real gap
+        (up to ~26 hours) and keep a streak without spending a freeze.
+        """
+        from quests.models import Streak
+
+        streak = Streak.objects.select_for_update().filter(
+            user_id=character.user_id,
+            quest_category=None,
+        ).first()
+        if streak is None or streak.last_completed_date is None:
+            return
+        last_completion = character.user.quest_completions.filter(
+            status='completed',
+        ).order_by('-completed_at').first()
+        if last_completion is None:
+            return
+        streak.last_completed_date = timezone.localtime(
+            last_completion.completed_at,
+            ZoneInfo(character.timezone),
+        ).date()
+        streak.save(update_fields=('last_completed_date',))
+        # The prefetched copy loaded by the view is now stale.
+        if hasattr(character.user, 'prefetched_streaks'):
+            del character.user.prefetched_streaks
+
     class Meta:
         model = Character
         fields = (
