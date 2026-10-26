@@ -216,3 +216,45 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Added before PR: secrets, local data, tool/OS files ---
+# Env files: keep only the template in git
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+credentials*
+secrets.*
+
+# Local databases, dumps and uploads
+*.sqlite3
+*.sql
+*.dump
+media/
+staticfiles/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local AI-tool settings and instructions
+CLAUDE.md
+.claude/settings.local.json
+.claude/scratch/
+.cursor/
+
+# Test / coverage output
+.coverage*
+htmlcov/
+coverage.xml
+.pytest_cache/
+
+# Temporary audit/debug files
+*_test_tmp.py
+scratch/
+tmp/
+
+CLAUDE.md
