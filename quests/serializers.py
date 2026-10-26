@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import serializers
 
 from .models import Quest, QuestCategory
@@ -10,17 +11,27 @@ class QuestCategorySerializer(serializers.ModelSerializer):
 
 
 class QuestSerializer(serializers.ModelSerializer):
-    def validate_category(self, category):
-        if category is None:
-            return category
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=QuestCategory.objects.none(),
+        required=False,
+        allow_null=True,
+    )
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        max_length=settings.QUESTIFY_MAX_DESCRIPTION_LENGTH,
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         request = self.context.get('request')
         user = getattr(request, 'user', None) if request else None
         user = self.context.get('user', user)
-        if user is None or category.user_id != user.id:
-            raise serializers.ValidationError(
-                'Category must belong to the current user.'
+        if user is not None and getattr(user, 'is_authenticated', True):
+            self.fields['category'].queryset = QuestCategory.objects.filter(
+                user=user,
             )
-        return category
 
     class Meta:
         model = Quest
@@ -36,7 +47,7 @@ class QuestSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'xp_reward', 'created_at', 'updated_at')
 
 
 class QuestCompleteResponseSerializer(serializers.Serializer):
