@@ -87,6 +87,59 @@ class HandlerTests(TestCase):
         self.assertEqual(Stat.objects.get(character=self.character, stat_type=strength).value, 3)
         self.assertEqual(Stat.objects.get(character=self.character, stat_type=creativity).value, 2)
 
+    def test_stat_update_handler_query_count_does_not_grow_with_rewards(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        stat_types = [
+            StatType.objects.create(name=f'S{i}', display_name=f'Stat {i}')
+            for i in range(6)
+        ]
+
+        def run(count):
+            # A fresh user each time, so every run takes the same code path.
+            user = User.objects.create_user(username=f'rewards-{count}')
+            quest = Quest.objects.create(
+                user=user,
+                title=f'Rewards {count}',
+                quest_type=Quest.QuestType.ONE_TIME,
+                xp_reward=50,
+            )
+            for stat_type in stat_types[:count]:
+                QuestStatReward.objects.create(quest=quest, stat_type=stat_type, amount=1)
+            event = QuestCompletedEvent(
+                quest_id=quest.id,
+                user_id=user.id,
+                completed_at=timezone.now(),
+                result=EventResult(),
+            )
+            with CaptureQueriesContext(connection) as queries:
+                StatUpdateHandler().handle(event)
+            return len(queries), event.result.stats_updated
+
+        few, _ = run(1)
+        many, updated = run(6)
+
+        self.assertEqual(many, few)
+        self.assertEqual(updated, {f'S{i}': 1 for i in range(6)})
+
+    def test_stat_update_handler_sums_duplicate_rewards_for_one_stat(self):
+        strength = StatType.objects.create(name='STR', display_name='Strength')
+        QuestStatReward.objects.create(quest=self.quest, stat_type=strength, amount=3)
+        QuestStatReward.objects.create(quest=self.quest, stat_type=strength, amount=4)
+        Stat.objects.create(character=self.character, stat_type=strength, value=10)
+        event = QuestCompletedEvent(
+            quest_id=self.quest.id,
+            user_id=self.user.id,
+            completed_at=timezone.now(),
+            result=EventResult(),
+        )
+
+        StatUpdateHandler().handle(event)
+
+        self.assertEqual(Stat.objects.get(character=self.character, stat_type=strength).value, 17)
+        self.assertEqual(event.result.stats_updated, {'STR': 17})
+
     def test_level_check_handler_levels_up_and_publishes_event(self):
         self.character.xp = 100
         self.character.save(update_fields=('xp',))
@@ -147,7 +200,25 @@ class HandlerTests(TestCase):
         StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 4, 5))
         StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 5, 6))
 
-        grant_freeze.assert_called_once_with(self.user.id)
+        grant_freeze.assert_called_once_with(self.user.id, 1)
+
+    def test_level_check_batches_large_xp_without_per_level_dispatch(self):
+        self.character.xp = 1_000_000
+        self.character.save(update_fields=('xp',))
+
+        with patch('events.handlers.dispatcher.dispatch') as dispatch:
+            LevelCheckHandler().handle(self.event)
+
+        self.character.refresh_from_db()
+        self.assertGreater(self.character.level, 2_000)
+        self.assertEqual(
+            self.character.xp_to_next_level,
+            round(100 * self.character.level**1.2),
+        )
+        dispatch.assert_called_once()
+        level_event = dispatch.call_args.args[0]
+        self.assertEqual(level_event.old_level, 1)
+        self.assertEqual(level_event.new_level, self.character.level)
 
     @patch(
         'events.handlers.StreakService.record_completion',

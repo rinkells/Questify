@@ -2,7 +2,7 @@
 URL configuration for config project.
 
 The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.1/topics/http/urls/
+https://docs.djangoproject.com/en/5.2/topics/http/urls/
 Examples:
 Function views
     1. Add an import:  from my_app import views
@@ -15,11 +15,14 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
+from django.conf import settings
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
+from config.health import healthz
 from core.views import CharacterView
+from core.auth_views import RegisterView, TokenLoginView, TokenLogoutView
 from achievements.views import AchievementListView, UnlockedAchievementListView
 from quests.views import QuestCategoryViewSet, QuestViewSet
 
@@ -29,7 +32,11 @@ router.register('quests', QuestViewSet, basename='quest')
 router.register('quest-categories', QuestCategoryViewSet, basename='quest-category')
 
 urlpatterns = [
+	path('healthz/', healthz, name='healthz'),
     path('admin/', admin.site.urls),
+    path('api/auth/login/', TokenLoginView.as_view(), name='api-token-login'),
+    path('api/auth/logout/', TokenLogoutView.as_view(), name='api-token-logout'),
+    path('api/auth/register/', RegisterView.as_view(), name='api-register'),
     path('api/', include(router.urls)),
     path('api/character/', CharacterView.as_view(), name='character'),
     path(
@@ -49,3 +56,8 @@ urlpatterns = [
         name='swagger-ui',
     ),
 ]
+
+if settings.DEBUG:
+    from django.contrib.staticfiles.urls import staticfiles_urlpatterns
+
+    urlpatterns += staticfiles_urlpatterns()
