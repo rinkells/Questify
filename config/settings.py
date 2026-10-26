@@ -60,6 +60,20 @@ except ValueError as exc:
 
 HEALTHCHECK_TOKEN = os.getenv('HEALTHCHECK_TOKEN', '')
 
+# Number of trusted reverse proxies in front of Django. An empty value counts
+# as unset; production must choose explicitly (checked below).
+drf_num_proxies_env = os.getenv('DRF_NUM_PROXIES', '').strip()
+try:
+	DRF_NUM_PROXIES = int(drf_num_proxies_env or '0')
+except ValueError:
+	DRF_NUM_PROXIES = -1
+if DRF_NUM_PROXIES < 0:
+	# A negative count makes DRF index past the X-Forwarded-For list and
+	# fail every throttled request with IndexError.
+	raise ImproperlyConfigured(
+		'DRF_NUM_PROXIES must be a non-negative integer.'
+	)
+
 if not DEBUG:
 	if (
 		len(SECRET_KEY) < 50
@@ -86,6 +100,14 @@ if not DEBUG:
 		raise ImproperlyConfigured(
 			'Set a random HEALTHCHECK_TOKEN of at least 32 characters in production.'
 		)
+	if not drf_num_proxies_env:
+		# Without it, every client behind a reverse proxy shares the proxy's
+		# IP: one login/register throttle bucket for the whole site and an
+		# admin allow-list that sees only the proxy address.
+		raise ImproperlyConfigured(
+			'Set DRF_NUM_PROXIES to the number of trusted reverse proxies '
+			'(0 when Django is reached directly) in production.'
+		)
 	SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', True)
 	# The container readiness probe reaches Django over the private HTTP
 	# interface. Keep this endpoint available to the probe while redirecting all
@@ -98,7 +120,10 @@ if not DEBUG:
 	SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', False)
 	SESSION_COOKIE_SECURE = True
 	CSRF_COOKIE_SECURE = True
-	if env_bool('USE_HTTPS_PROXY', False):
+	# A trusted proxy (DRF_NUM_PROXIES > 0) terminates TLS and talks plain HTTP
+	# to Django; without trusting X-Forwarded-Proto, SECURE_SSL_REDIRECT would
+	# redirect every proxied request to HTTPS forever.
+	if env_bool('USE_HTTPS_PROXY', DRF_NUM_PROXIES > 0):
 		# Only enable when a trusted proxy overwrites X-Forwarded-Proto.
 		SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
@@ -123,6 +148,11 @@ INSTALLED_APPS = [
 
 REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_PARSER_CLASSES': [
+        'core.parsers.SafeJSONParser',
+        'rest_framework.parsers.FormParser',
+        'rest_framework.parsers.MultiPartParser',
+    ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
 	'DEFAULT_PERMISSION_CLASSES': [
@@ -144,7 +174,7 @@ REST_FRAMEWORK = {
 	},
 	# Ignore spoofable X-Forwarded-For by default. Set this to the number of
 	# trusted proxies when requests arrive through a proxy that overwrites it.
-	'NUM_PROXIES': int(os.getenv('DRF_NUM_PROXIES', '0')),
+	'NUM_PROXIES': DRF_NUM_PROXIES,
 }
 
 REDIS_URL = os.getenv('REDIS_URL')

@@ -28,7 +28,8 @@ class ExpiringTokenAuthentication(TokenAuthentication):
 		)
 		if expires_at <= timezone.now():
 			token.delete()
-			raise AuthenticationFailed('Token expired. Please log in again.')
+			# Same message as an unknown token, so a stale token reveals nothing.
+			raise AuthenticationFailed('Invalid token.')
 		if not token.user.is_active:
 			raise AuthenticationFailed('User inactive or deleted.')
 		return token.user, token

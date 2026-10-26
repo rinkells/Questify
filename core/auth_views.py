@@ -7,9 +7,10 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions, status
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
 from rest_framework.views import APIView
 
-from .auth_serializers import UserRegistrationSerializer
+from .auth_serializers import LoginSerializer, UserRegistrationSerializer
 from .authentication import ExpiringTokenAuthentication
 from .models import HashedAPIToken
 from .throttling import AtomicScopedRateThrottle
@@ -24,6 +25,9 @@ class RegisterView(generics.CreateAPIView):
 
 
 class TokenLoginView(ObtainAuthToken):
+	serializer_class = LoginSerializer
+	# ObtainAuthToken hard-codes its parsers, bypassing DEFAULT_PARSER_CLASSES.
+	parser_classes = api_settings.DEFAULT_PARSER_CLASSES
 	permission_classes = (permissions.AllowAny,)
 	authentication_classes = ()
 	throttle_classes = (AtomicScopedRateThrottle,)

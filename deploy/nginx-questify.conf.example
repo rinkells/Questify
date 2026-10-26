@@ -3,8 +3,12 @@
 limit_req_zone $binary_remote_addr zone=questify_api:10m rate=10r/s;
 limit_req_zone $binary_remote_addr zone=questify_admin:10m rate=2r/s;
 
+# Requires DRF_NUM_PROXIES=1 in Django's environment: without it every client
+# is seen as the proxy and shares one login/register throttle bucket.
 server {
 	listen 443 ssl;
+	# Requests are small JSON documents; reject anything larger early.
+	client_max_body_size 64k;
 	server_name questify.example.com;
 
 	ssl_certificate /etc/letsencrypt/live/questify.example.com/fullchain.pem;

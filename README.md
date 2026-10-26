@@ -13,6 +13,13 @@ cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
 ```
 
+`.env.example` defaults to `DEBUG=False`, and the dev override turns debug on for the
+containers it starts. Running plain `docker compose up` with that file fails on
+purpose until `SECRET_KEY`, `ADMIN_ALLOWED_IPS`, `HEALTHCHECK_TOKEN` and
+`DRF_NUM_PROXIES` hold real production values. Set `DRF_NUM_PROXIES` to the number of
+trusted reverse proxies (1 for `deploy/nginx-questify.conf.example`); otherwise every
+client behind the proxy shares one login/register rate-limit bucket.
+
 The API is at `http://localhost:8000/api/` and the interactive docs at
 `http://localhost:8000/api/docs/`. The dev override mounts the source tree; restart
 the web container (`docker compose restart web`) after code changes.
