@@ -54,13 +54,14 @@ class CharacterSerializer(serializers.ModelSerializer):
         if self.instance is None or value == self.instance.timezone:
             return value
 
+        # Failed completions count too: they occupy the day window just like
+        # completed ones, and a zone switch would otherwise reopen that day.
         completed_recently = self.instance.user.quest_completions.filter(
-            status='completed',
             completed_at__gte=timezone.now() - timedelta(hours=24),
         ).exists()
         if completed_recently:
             raise serializers.ValidationError(
-                'Timezone can be changed 24 hours after the last quest completion.'
+                'Timezone can be changed 24 hours after the last quest completion or failure.'
             )
         return value
 

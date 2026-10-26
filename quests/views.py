@@ -59,6 +59,24 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 		self.check_object_permissions(self.request, quest)
 		return quest
 
+	def _lock_category(self, serializer):
+		"""Lock the chosen category so a concurrent DELETE cannot orphan the FK.
+
+		The serializer validated the category before this transaction began;
+		without the lock a category deleted in between surfaces as a 500.
+		"""
+		category = serializer.validated_data.get('category')
+		if category is None:
+			return
+		locked = QuestCategory.objects.select_for_update().filter(
+			pk=category.pk,
+			user=self.request.user,
+		).first()
+		if locked is None:
+			raise DRFValidationError({
+				'category': 'This category no longer exists.',
+			})
+
 	@transaction.atomic
 	def perform_create(self, serializer):
 		Character.locked_for_user_id(self.request.user.pk)
@@ -68,6 +86,7 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			raise DRFValidationError({
 				'detail': 'Quest limit reached for this account.',
 			})
+		self._lock_category(serializer)
 		quest_type = serializer.validated_data['quest_type']
 		serializer.save(
 			user=self.request.user,
@@ -83,6 +102,16 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			),
 			pk=serializer.instance.pk,
 		)
+		if (
+			'deadline' in serializer.validated_data
+			and quest.deadline is not None
+			and quest.deadline < timezone.now()
+			and serializer.validated_data['deadline'] != quest.deadline
+		):
+			raise DRFValidationError({
+				'deadline': 'The deadline has passed and cannot be changed.',
+			})
+		self._lock_category(serializer)
 		new_type = serializer.validated_data.get('quest_type', quest.quest_type)
 		if new_type != quest.quest_type and QuestCompletion.objects.filter(
 			quest=quest,
@@ -190,3 +219,21 @@ class QuestCategoryViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 		)
 		serializer.instance = category
 		serializer.save()
+
+	@transaction.atomic
+	def perform_destroy(self, instance):
+		# Serialize with quest create/update, which lock the category row too.
+		# Lock order must match complete/fail (quest rows, then category):
+		# taking the category first deadlocks against a concurrent completion.
+		list(
+			Quest.objects.select_for_update().filter(
+				category_id=instance.pk,
+			).order_by('pk').values_list('pk', flat=True)
+		)
+		category = get_object_or_404(
+			QuestCategory.objects.select_for_update().filter(
+				user=self.request.user,
+			),
+			pk=instance.pk,
+		)
+		category.delete()

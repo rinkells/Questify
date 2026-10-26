@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Quest, QuestCategory
@@ -38,6 +39,11 @@ class QuestSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 'Deadline must be between the years 2000 and 2100.'
             )
+        # A new or changed deadline must lie ahead; resubmitting the stored
+        # value (PUT) stays valid.
+        unchanged = self.instance is not None and value == self.instance.deadline
+        if value is not None and not unchanged and value < timezone.now():
+            raise serializers.ValidationError('Deadline must be in the future.')
         return value
 
     class Meta:

@@ -128,6 +128,9 @@ class QuestCompletion(models.Model):
 	completed_at = models.DateTimeField(default=timezone.now, editable=False)
 	xp_awarded = models.PositiveIntegerField(default=0)
 	xp_awarded_is_estimate = models.BooleanField(default=False, editable=False)
+	# Set for completions of one-time quests, so the database itself refuses a
+	# second reward for the same quest if an application path ever skips the lock.
+	is_one_time = models.BooleanField(default=False, editable=False)
 	status = models.CharField(
 		max_length=10,
 		choices=CompletionStatus.choices,
@@ -149,6 +152,11 @@ class QuestCompletion(models.Model):
 			models.CheckConstraint(
 				condition=Q(xp_awarded__lte=MAX_XP_REWARD),
 				name='completion_xp_awarded_max_1000',
+			),
+			models.UniqueConstraint(
+				fields=('quest',),
+				condition=Q(status='completed', is_one_time=True),
+				name='one_completed_row_per_one_time_quest',
 			),
 		]
 

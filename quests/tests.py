@@ -138,8 +138,8 @@ def test_deleting_quest_archives_it_and_does_not_restore_lifetime_quota(
 def test_category_creation_enforces_per_user_quota(api_client, user):
 	api_client.force_authenticate(user=user)
 
-	first = api_client.post('/api/quest-categories/', {'name': 'First'})
-	second = api_client.post('/api/quest-categories/', {'name': 'Second'})
+	first = api_client.post('/api/quest-categories/', {'name': 'First'}, format='json')
+	second = api_client.post('/api/quest-categories/', {'name': 'Second'}, format='json')
 
 	assert first.status_code == 201
 	assert second.status_code == 400
@@ -994,3 +994,248 @@ def test_deadline_outside_supported_range_is_rejected(api_client, user, deadline
 
 	assert response.status_code == 400
 	assert 'deadline' in response.data
+
+
+@pytest.mark.django_db
+def test_database_rejects_a_second_completion_of_a_one_time_quest(user):
+	quest = Quest.objects.create(
+		user=user,
+		title='Once',
+		quest_type=Quest.QuestType.ONE_TIME,
+		xp_reward=50,
+	)
+	QuestService.complete_quest(quest.id, user)
+
+	with pytest.raises(IntegrityError), transaction.atomic():
+		QuestCompletion.objects.create(
+			user=user,
+			quest=quest,
+			status=QuestCompletion.CompletionStatus.COMPLETED,
+			xp_awarded=50,
+			is_one_time=True,
+		)
+
+
+@pytest.mark.django_db
+def test_daily_quest_completions_are_not_marked_one_time(user):
+	quest = Quest.objects.create(
+		user=user,
+		title='Daily',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+	)
+
+	QuestService.complete_quest(quest.id, user)
+
+	assert not QuestCompletion.objects.get(quest=quest).is_one_time
+
+
+@pytest.mark.django_db
+def test_quest_cannot_be_assigned_a_category_deleted_after_validation(user):
+	from rest_framework.exceptions import ValidationError as DRFValidationError
+	from .views import QuestViewSet
+
+	gone = QuestCategory.objects.create(user=user, name='gone')
+	stale = QuestCategory(pk=gone.pk, user=user, name='gone')
+	gone.delete()
+
+	view = QuestViewSet()
+	view.request = type('Request', (), {'user': user})()
+	serializer = type('Serializer', (), {
+		'validated_data': {'category': stale, 'quest_type': 'daily'},
+	})()
+
+	with pytest.raises(DRFValidationError) as excinfo:
+		view.perform_create(serializer)
+
+	assert 'category' in excinfo.value.detail
+	assert not Quest.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+def test_deleting_a_category_detaches_its_quests(api_client, user):
+	category = QuestCategory.objects.create(user=user, name='temp')
+	quest = Quest.objects.create(
+		user=user, title='q', quest_type='daily', xp_reward=25, category=category,
+	)
+	api_client.force_authenticate(user=user)
+
+	response = api_client.delete(f'/api/quest-categories/{category.pk}/')
+
+	assert response.status_code == 204
+	quest.refresh_from_db()
+	assert quest.category_id is None
+
+
+@pytest.mark.django_db
+def test_other_users_category_cannot_be_deleted(api_client, user, other_user):
+	category = QuestCategory.objects.create(user=other_user, name='theirs')
+	api_client.force_authenticate(user=user)
+
+	response = api_client.delete(f'/api/quest-categories/{category.pk}/')
+
+	assert response.status_code == 404
+	assert QuestCategory.objects.filter(pk=category.pk).exists()
+
+
+@pytest.mark.django_db
+def test_deadline_must_lie_in_the_future(api_client, user):
+	api_client.force_authenticate(user=user)
+
+	response = api_client.post(
+		'/api/quests/',
+		{'title': 'late', 'quest_type': 'daily', 'deadline': '2001-01-01T00:00:00Z'},
+		format='json',
+	)
+
+	assert response.status_code == 400
+	assert 'deadline' in response.json()
+
+
+@pytest.mark.django_db
+def test_expired_quest_deadline_cannot_be_extended(api_client, user):
+	expired = Quest.objects.create(
+		user=user,
+		title='expired',
+		quest_type=Quest.QuestType.ONE_TIME,
+		xp_reward=50,
+		deadline=timezone.now() - timedelta(days=1),
+	)
+	api_client.force_authenticate(user=user)
+
+	response = api_client.patch(
+		f'/api/quests/{expired.pk}/',
+		{'deadline': (timezone.now() + timedelta(days=1)).isoformat()},
+		format='json',
+	)
+	completion = api_client.post(f'/api/quests/{expired.pk}/complete/')
+
+	assert response.status_code == 400
+	assert completion.status_code == 400
+
+
+@pytest.mark.django_db
+def test_backfill_flags_only_the_earliest_completed_row_per_one_time_quest(user):
+	import importlib
+	from django.apps import apps
+
+	migration = importlib.import_module('quests.migrations.0014_backfill_is_one_time')
+	one_time = Quest.objects.create(
+		user=user, title='ot', quest_type='one_time', xp_reward=50,
+	)
+	daily = Quest.objects.create(
+		user=user, title='d', quest_type='daily', xp_reward=25,
+	)
+	first = QuestCompletion.objects.create(
+		user=user, quest=one_time, status='completed', xp_awarded=50,
+	)
+	duplicate = QuestCompletion.objects.create(
+		user=user, quest=one_time, status='completed', xp_awarded=50,
+	)
+	other = QuestCompletion.objects.create(
+		user=user, quest=daily, status='completed', xp_awarded=25,
+	)
+
+	migration.flag_one_time_completions(apps, None)
+
+	flags = {
+		row.pk: row.is_one_time
+		for row in QuestCompletion.objects.filter(pk__in=[first.pk, duplicate.pk, other.pk])
+	}
+	assert flags == {first.pk: True, duplicate.pk: False, other.pk: False}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_category_delete_races_complete_and_assign_without_server_errors(user):
+	import threading
+	from django.db import connection
+
+	statuses = []
+	failures = []
+
+	def call(method, url, payload=None):
+		client = APIClient(raise_request_exception=False)
+		client.force_authenticate(user=user)
+		try:
+			barrier.wait()
+			response = getattr(client, method)(url, payload, format='json')
+			statuses.append(response.status_code)
+		except Exception as exc:  # pragma: no cover - reported below
+			failures.append(exc)
+		finally:
+			connection.close()
+
+	for index in range(8):
+		category = QuestCategory.objects.create(user=user, name=f'race-{index}')
+		quest = Quest.objects.create(
+			user=user,
+			title='racer',
+			quest_type=Quest.QuestType.ONE_TIME,
+			xp_reward=50,
+			category=category,
+		)
+		barrier = threading.Barrier(3)
+		jobs = [
+			('delete', f'/api/quest-categories/{category.pk}/', None),
+			('post', f'/api/quests/{quest.pk}/complete/', None),
+			('post', '/api/quests/', {
+				'title': 'new', 'quest_type': 'daily', 'category': category.pk,
+			}),
+		]
+		threads = [threading.Thread(target=call, args=job) for job in jobs]
+		for thread in threads:
+			thread.start()
+		for thread in threads:
+			thread.join()
+
+	assert not failures
+	assert statuses and max(statuses) < 500
+
+
+@pytest.mark.django_db(transaction=True)
+def test_category_delete_races_complete_and_assign_without_server_errors(user):
+	import threading
+	from django.db import connection
+
+	statuses = []
+	failures = []
+
+	def call(barrier, method, url, payload=None):
+		client = APIClient(raise_request_exception=False)
+		client.force_authenticate(user=user)
+		try:
+			barrier.wait()
+			response = getattr(client, method)(url, payload, format='json')
+			statuses.append(response.status_code)
+		except Exception as exc:  # pragma: no cover - reported below
+			failures.append(exc)
+		finally:
+			connection.close()
+
+	for index in range(8):
+		category = QuestCategory.objects.create(user=user, name=f'race-{index}')
+		quest = Quest.objects.create(
+			user=user,
+			title='racer',
+			quest_type=Quest.QuestType.ONE_TIME,
+			xp_reward=50,
+			category=category,
+		)
+		barrier = threading.Barrier(3)
+		jobs = [
+			('delete', f'/api/quest-categories/{category.pk}/', None),
+			('post', f'/api/quests/{quest.pk}/complete/', None),
+			('post', '/api/quests/', {
+				'title': 'new', 'quest_type': 'daily', 'category': category.pk,
+			}),
+		]
+		threads = [
+			threading.Thread(target=call, args=(barrier, *job)) for job in jobs
+		]
+		for thread in threads:
+			thread.start()
+		for thread in threads:
+			thread.join()
+
+	assert not failures
+	assert statuses and max(statuses) < 500

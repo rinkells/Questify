@@ -39,6 +39,9 @@ class HashedAPIToken(models.Model):
 		related_name='api_tokens',
 	)
 	token_digest = models.CharField(max_length=64, unique=True, editable=False)
+	# Django's session-auth hash of the owner's password when the token was
+	# issued; a later password change makes the stored value stop matching.
+	auth_hash = models.CharField(max_length=64, editable=False, default='')
 	created_at = models.DateTimeField(auto_now_add=True)
 
 	@staticmethod
@@ -51,6 +54,7 @@ class HashedAPIToken(models.Model):
 		token = cls.objects.create(
 			user=user,
 			token_digest=cls.digest(raw_token),
+			auth_hash=user.get_session_auth_hash(),
 		)
 		return token, raw_token
 
