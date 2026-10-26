@@ -50,8 +50,11 @@ class QuestService:
                 user = quest.user
             else:
                 quest = quest_queryset.get(pk=quest_id, user=user)
-        now = timezone.now()
         character = Character.locked_for_user_id(user.id)
+        # Take the timestamp only after the per-user lock is held. A timestamp
+        # read before the lock can be older than rows committed by a request
+        # that locked first, hiding their XP from the 24h cap below.
+        now = timezone.now()
         category_name = ''
         if quest.category_id:
             category_name = QuestCategory.objects.select_for_update().get(
@@ -100,7 +103,6 @@ class QuestService:
             user=user,
             status=QuestCompletion.CompletionStatus.COMPLETED,
             completed_at__gte=now - timedelta(hours=24),
-            completed_at__lt=now,
         )
         xp_earned_in_24h = (
             recent_completions.filter(
@@ -147,13 +149,13 @@ class QuestService:
             quest = locked_quest
             if quest.user_id != user.pk:
                 raise Quest.DoesNotExist
+        character = Character.locked_for_user_id(user.id)
         now = timezone.now()
         if quest.archived_at is not None or not quest.is_active:
             raise ValidationError('This quest is inactive and cannot be failed.')
         if quest.deadline is not None and quest.deadline < now:
             raise ValidationError('This quest deadline has passed and cannot be failed.')
 
-        character = Character.locked_for_user_id(user.id)
         category_name = ''
         if quest.category_id:
             category_name = QuestCategory.objects.select_for_update().get(
@@ -213,7 +215,6 @@ class StreakService:
     def _get_general_streak(user):
         user_id = getattr(user, 'pk', user)
         # Serialize creation and updates for NULL-category streaks per user.
-        from core.models import Character
         Character.objects.select_for_update().get(user_id=user_id)
         streak, _ = Streak.objects.get_or_create(
             user_id=user_id,

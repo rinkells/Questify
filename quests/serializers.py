@@ -33,6 +33,13 @@ class QuestSerializer(serializers.ModelSerializer):
                 user=user,
             )
 
+    def validate_deadline(self, value):
+        if value is not None and not 2000 <= value.year <= 2100:
+            raise serializers.ValidationError(
+                'Deadline must be between the years 2000 and 2100.'
+            )
+        return value
+
     class Meta:
         model = Quest
         fields = (

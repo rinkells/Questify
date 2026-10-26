@@ -897,3 +897,100 @@ def test_missing_character_does_not_break_quest_completion(user):
 	result = QuestService.complete_quest(quest.id, user)
 
 	assert result['xp_gained'] == 25
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(QUESTIFY_XP_24H_CAP=200)
+def test_xp_cap_holds_under_concurrent_completions(user):
+	import threading
+	from django.db import connection
+
+	quests = [
+		Quest.objects.create(
+			user=user,
+			title=f'Parallel {index}',
+			quest_type=Quest.QuestType.ONE_TIME,
+			xp_reward=50,
+		)
+		for index in range(40)
+	]
+	barrier = threading.Barrier(len(quests))
+
+	def complete(quest):
+		client = APIClient()
+		client.force_authenticate(user=user)
+		try:
+			barrier.wait()
+			client.post(f'/api/quests/{quest.id}/complete/')
+		finally:
+			connection.close()
+
+	threads = [threading.Thread(target=complete, args=(q,)) for q in quests]
+	for thread in threads:
+		thread.start()
+	for thread in threads:
+		thread.join()
+
+	total = sum(
+		QuestCompletion.objects.filter(user=user).values_list('xp_awarded', flat=True),
+	)
+	assert total == 200
+
+
+@pytest.mark.django_db
+def test_timezone_change_cannot_shrink_a_streak_gap(api_client, user):
+	quest = Quest.objects.create(
+		user=user,
+		title='Daily',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+	)
+	api_client.force_authenticate(user=user)
+	monday = datetime(2026, 3, 2, 0, 30, tzinfo=datetime_timezone.utc)
+	wednesday = monday + timedelta(days=2, minutes=5)
+
+	with patch('django.utils.timezone.now', return_value=monday):
+		assert api_client.post(f'/api/quests/{quest.id}/complete/').status_code == 200
+	with patch('django.utils.timezone.now', return_value=wednesday):
+		change = api_client.patch(
+			'/api/character/',
+			{'timezone': 'Pacific/Pago_Pago'},
+			format='json',
+		)
+		response = api_client.post(f'/api/quests/{quest.id}/complete/')
+
+	assert change.status_code == 200
+	assert response.status_code == 200
+	assert response.data['streak_length'] == 1
+
+
+@pytest.mark.django_db
+def test_complete_error_detail_is_always_a_string(api_client, user):
+	inactive = Quest.objects.create(
+		user=user,
+		title='Inactive',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+		is_active=False,
+	)
+	api_client.force_authenticate(user=user)
+
+	response = api_client.post(f'/api/quests/{inactive.id}/complete/')
+
+	assert response.status_code == 400
+	assert isinstance(response.data['detail'], str)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('deadline', ['0001-01-01T00:00:00Z', '9999-12-31T23:59:59Z'])
+def test_deadline_outside_supported_range_is_rejected(api_client, user, deadline):
+	api_client.force_authenticate(user=user)
+
+	response = api_client.post(
+		'/api/quests/',
+		{'title': 'Far', 'quest_type': 'daily', 'deadline': deadline},
+		format='json',
+	)
+
+	assert response.status_code == 400
+	assert 'deadline' in response.data
