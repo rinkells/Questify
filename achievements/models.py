@@ -23,6 +23,12 @@ class Achievement(models.Model):
     )
     condition_config = models.JSONField(default=dict)
 
+    def clean(self):
+        super().clean()
+        from .conditions import validate_condition_config
+
+        validate_condition_config(self.condition_type, self.condition_config)
+
     def __str__(self):
         return self.name
 

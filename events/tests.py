@@ -147,7 +147,25 @@ class HandlerTests(TestCase):
         StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 4, 5))
         StreakFreezeHandler().handle(LevelUpEvent(self.user.id, 5, 6))
 
-        grant_freeze.assert_called_once_with(self.user.id)
+        grant_freeze.assert_called_once_with(self.user.id, 1)
+
+    def test_level_check_batches_large_xp_without_per_level_dispatch(self):
+        self.character.xp = 1_000_000
+        self.character.save(update_fields=('xp',))
+
+        with patch('events.handlers.dispatcher.dispatch') as dispatch:
+            LevelCheckHandler().handle(self.event)
+
+        self.character.refresh_from_db()
+        self.assertGreater(self.character.level, 2_000)
+        self.assertEqual(
+            self.character.xp_to_next_level,
+            round(100 * self.character.level**1.2),
+        )
+        dispatch.assert_called_once()
+        level_event = dispatch.call_args.args[0]
+        self.assertEqual(level_event.old_level, 1)
+        self.assertEqual(level_event.new_level, self.character.level)
 
     @patch(
         'events.handlers.StreakService.record_completion',
