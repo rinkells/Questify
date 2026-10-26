@@ -1,0 +1,45 @@
+# Example host Nginx configuration for the Compose web service.
+# Replace the hostname, certificate paths, and admin CIDRs before enabling it.
+limit_req_zone $binary_remote_addr zone=questify_api:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=questify_admin:10m rate=2r/s;
+
+server {
+	listen 443 ssl;
+	server_name questify.example.com;
+
+	ssl_certificate /etc/letsencrypt/live/questify.example.com/fullchain.pem;
+	ssl_certificate_key /etc/letsencrypt/live/questify.example.com/privkey.pem;
+
+	# The container's readiness probe calls Django directly. Never proxy this
+	# dependency-checking endpoint to public clients.
+	location = /healthz/ {
+		return 404;
+	}
+
+	location ^~ /admin/ {
+		allow 198.51.100.10/32;
+		deny all;
+		limit_req zone=questify_admin burst=10 nodelay;
+		limit_req_status 429;
+		proxy_set_header Host $host;
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_pass http://127.0.0.1:8000;
+	}
+
+	location ^~ /api/ {
+		limit_req zone=questify_api burst=30 nodelay;
+		limit_req_status 429;
+		proxy_set_header Host $host;
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_pass http://127.0.0.1:8000;
+	}
+
+	location / {
+		proxy_set_header Host $host;
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_pass http://127.0.0.1:8000;
+	}
+}

@@ -1,0 +1,8 @@
+services:
+  migrate:
+    volumes:
+      - .:/app
+
+  web:
+    volumes:
+      - .:/app
