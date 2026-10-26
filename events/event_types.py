@@ -1,6 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 
 
 @dataclass
@@ -8,15 +7,9 @@ class EventResult:
     xp_gained: int = 0
     leveled_up: bool = False
     new_level: int | None = None
-    stats_updated: dict[str, int] | dict[Any, int] = None
-    achievements_unlocked: list[int] = None
+    stats_updated: dict[str, int] = field(default_factory=dict)
+    achievements_unlocked: list[int] = field(default_factory=list)
     streak_length: int = 0
-
-    def __post_init__(self):
-        if self.stats_updated is None:
-            self.stats_updated = {}
-        if self.achievements_unlocked is None:
-            self.achievements_unlocked = []
 
     def as_dict(self):
         return {
@@ -40,6 +33,7 @@ class QuestCompletedEvent(Event):
     user_id: int
     completed_at: datetime
     result: EventResult | None = None
+    xp_awarded: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,22 +41,10 @@ class LevelUpEvent(Event):
     user_id: int
     old_level: int
     new_level: int
+    result: EventResult | None = None
 
 
 @dataclass(frozen=True)
 class AchievementUnlockedEvent(Event):
     user_id: int
     achievement_id: int
-
-
-@dataclass(frozen=True)
-class BossDamagedEvent(Event):
-    boss_id: int
-    damage: int
-    remaining_hp: int
-
-
-@dataclass(frozen=True)
-class BossDefeatedEvent(Event):
-    boss_id: int
-    user_id: int
