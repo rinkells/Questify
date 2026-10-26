@@ -7,7 +7,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache, caches
 from django.db import IntegrityError
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from redis.exceptions import RedisError
 from rest_framework.test import APIClient
@@ -420,3 +420,168 @@ class CharacterSerializerPerformanceTests(TestCase):
 
 		self.assertEqual(response.status_code, 200)
 		self.assertEqual(len(response.data['stats']), 4)
+
+
+class HardeningTests(TestCase):
+	password = 'Cobalt-River-Planets-482!'
+
+	def setUp(self):
+		cache.clear()
+		self.addCleanup(cache.clear)
+
+	def test_usernames_are_unique_case_insensitively_in_the_database(self):
+		user_model = get_user_model()
+		user_model.objects.create_user(username='Bob', password=self.password)
+
+		with self.assertRaises(IntegrityError):
+			user_model.objects.create_user(username='bob', password=self.password)
+
+	def test_duplicate_email_is_rejected(self):
+		client = APIClient()
+		first = client.post(
+			'/api/auth/register/',
+			{'username': 'mail-one', 'email': 'Dup@Example.com', 'password': self.password},
+			format='json',
+		)
+		cache.clear()
+		second = client.post(
+			'/api/auth/register/',
+			{'username': 'mail-two', 'email': 'dup@example.com', 'password': self.password},
+			format='json',
+		)
+
+		self.assertEqual(first.status_code, 201)
+		self.assertEqual(second.status_code, 400)
+		self.assertIn('email', second.data)
+
+	def test_oversized_passwords_are_rejected(self):
+		client = APIClient()
+		register = client.post(
+			'/api/auth/register/',
+			{'username': 'long-pw', 'password': 'a1B!' * 200},
+			format='json',
+		)
+		login = client.post(
+			'/api/auth/login/',
+			{'username': 'long-pw', 'password': 'a' * 600},
+			format='json',
+		)
+
+		self.assertEqual(register.status_code, 400)
+		self.assertEqual(login.status_code, 400)
+
+	def test_deeply_nested_json_is_a_400_not_a_500(self):
+		response = APIClient().generic(
+			'POST',
+			'/api/auth/login/',
+			'[' * 100_000 + ']' * 100_000,
+			content_type='application/json',
+		)
+
+		self.assertEqual(response.status_code, 400)
+
+	def test_expired_token_is_indistinguishable_from_an_unknown_one(self):
+		user = get_user_model().objects.create_user(
+			username='stale-token', password=self.password,
+		)
+		token, raw_token = HashedAPIToken.issue_for_user(user)
+		HashedAPIToken.objects.filter(pk=token.pk).update(
+			created_at=timezone.now() - timedelta(days=settings.AUTH_TOKEN_TTL_DAYS + 1),
+		)
+		client = APIClient()
+		client.credentials(HTTP_AUTHORIZATION=f'Token {raw_token}')
+
+		response = client.get('/api/character/')
+
+		self.assertEqual(response.status_code, 401)
+		self.assertEqual(str(response.data['detail']), 'Invalid token.')
+
+	def test_emails_are_unique_case_insensitively_in_the_database(self):
+		user_model = get_user_model()
+		user_model.objects.create_user('first', 'Same@Example.com', self.password)
+		user_model.objects.create_user('blank-one', '', self.password)
+		user_model.objects.create_user('blank-two', '', self.password)
+
+		with self.assertRaises(IntegrityError):
+			user_model.objects.create_user('second', 'same@example.com', self.password)
+
+	def test_login_accepts_any_case_of_the_username(self):
+		get_user_model().objects.create_user('Erin', password=self.password)
+
+		response = APIClient().post(
+			'/api/auth/login/',
+			{'username': 'erin', 'password': self.password},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, 200)
+
+	def test_retry_after_reports_the_time_left_in_the_window(self):
+		# A different username per attempt, so only the per-IP counter blocks.
+		client = APIClient()
+		for attempt in range(6):
+			response = client.post(
+				'/api/auth/login/',
+				{'username': f'nobody-{attempt}', 'password': 'wrong'},
+				format='json',
+			)
+		self.assertEqual(response.status_code, 429)
+		redis_key = cache.make_and_validate_key('throttle_login_ip:127.0.0.1')
+		cache._cache.get_client(redis_key).expire(redis_key, 7)
+
+		response = client.post(
+			'/api/auth/login/',
+			{'username': 'nobody-last', 'password': 'wrong'},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, 429)
+		self.assertLessEqual(int(response['Retry-After']), 7)
+
+	def test_suite_uses_its_own_redis_database(self):
+		self.assertTrue(settings.CACHES['default']['LOCATION'].endswith('/15'))
+
+
+class ConcurrentRegistrationTests(TransactionTestCase):
+	password = 'Cobalt-River-Planets-482!'
+
+	def setUp(self):
+		cache.clear()
+		self.addCleanup(cache.clear)
+
+	def test_parallel_registrations_with_one_email_create_one_account(self):
+		import threading
+		from django.db import connection
+
+		barrier = threading.Barrier(2)
+		statuses = []
+
+		def register(index):
+			try:
+				barrier.wait()
+				response = APIClient().post(
+					'/api/auth/register/',
+					{
+						'username': f'racer-{index}',
+						'email': 'race@example.com',
+						'password': self.password,
+					},
+					format='json',
+				)
+				statuses.append((response.status_code, response.data))
+			finally:
+				connection.close()
+
+		threads = [threading.Thread(target=register, args=(i,)) for i in range(2)]
+		for thread in threads:
+			thread.start()
+		for thread in threads:
+			thread.join()
+
+		self.assertEqual(
+			get_user_model().objects.filter(email__iexact='race@example.com').count(),
+			1,
+		)
+		failures = [data for code, data in statuses if code == 400]
+		self.assertEqual(len(failures), 1)
+		self.assertIn('email', failures[0])

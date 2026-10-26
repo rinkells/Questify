@@ -47,10 +47,32 @@ class AtomicThrottleMixin:
 		self.key = self.get_cache_key(request, view)
 		if self.key is None:
 			return True
-		return self._increment(self.key) <= self.num_requests
+		if self._increment(self.key) <= self.num_requests:
+			return True
+		self._blocked_keys = [self.key]
+		return False
+
+	def _remaining_seconds(self, key):
+		"""Seconds left in a counter's window, or None if the cache can't say."""
+		try:
+			client = self.cache._cache.get_client(key)
+			ttl = client.ttl(self.cache.make_and_validate_key(key))
+		except (AttributeError, RedisError):
+			# Non-Redis backends (tests, local fallback) expose no TTL.
+			return None
+		return ttl if ttl > 0 else None
 
 	def wait(self):
-		return getattr(self, 'duration', None)
+		# Report the real time left in the fixed window, not its full length.
+		remaining = [
+			seconds
+			for seconds in map(
+				self._remaining_seconds,
+				getattr(self, '_blocked_keys', ()),
+			)
+			if seconds
+		]
+		return max(remaining) if remaining else getattr(self, 'duration', None)
 
 
 class AtomicAnonRateThrottle(AtomicThrottleMixin, AnonRateThrottle):
@@ -94,14 +116,12 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 			# username alone lets any third party lock the owner out of login.
 			identifiers.append(f'account:{client_ip}:{username_digest}')
 
-		allowed = True
+		self._blocked_keys = []
 		for identifier in identifiers:
 			key = self.cache_format % {
 				'scope': self.scope,
 				'ident': identifier,
 			}
-			allowed = self._increment(key) <= self.num_requests and allowed
-		return allowed
-
-	def wait(self):
-		return self.duration
+			if self._increment(key) > self.num_requests:
+				self._blocked_keys.append(key)
+		return not self._blocked_keys

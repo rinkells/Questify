@@ -1,8 +1,18 @@
 services:
   migrate:
+    environment:
+      DEBUG: "True"
     volumes:
       - .:/app
 
   web:
+    environment:
+      # Development only. The base file and .env.example default to DEBUG=False.
+      DEBUG: "True"
+      # Nothing sits in front of the dev server, so never trust X-Forwarded-For.
+      DRF_NUM_PROXIES: "0"
+      # The source tree is mounted; reload gunicorn when it changes so the
+      # running server never serves stale code.
+      GUNICORN_CMD_ARGS: "--reload"
     volumes:
       - .:/app

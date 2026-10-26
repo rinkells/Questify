@@ -2,13 +2,42 @@ from django.contrib.auth import get_user_model, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
+from rest_framework.authtoken.serializers import AuthTokenSerializer
 
 
 User = get_user_model()
 
+# Bound the work done hashing/validating a password supplied by a client.
+MAX_PASSWORD_LENGTH = 128
+
+
+class LoginSerializer(AuthTokenSerializer):
+	username = serializers.CharField(write_only=True, max_length=150)
+	# Looser than the registration limit so accounts created before that limit
+	# existed can still log in; this only bounds the hashing work per request.
+	password = serializers.CharField(
+		write_only=True,
+		trim_whitespace=False,
+		max_length=4 * MAX_PASSWORD_LENGTH,
+	)
+
+	def validate(self, attrs):
+		# Usernames are unique case-insensitively (core migration 0006), so
+		# "erin" unambiguously means the account stored as "Erin".
+		stored_username = User.objects.filter(
+			username__iexact=User.normalize_username(attrs.get('username', '')),
+		).values_list('username', flat=True).first()
+		if stored_username is not None:
+			attrs['username'] = stored_username
+		return super().validate(attrs)
+
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
-	password = serializers.CharField(write_only=True, trim_whitespace=False)
+	password = serializers.CharField(
+		write_only=True,
+		trim_whitespace=False,
+		max_length=MAX_PASSWORD_LENGTH,
+	)
 
 	class Meta:
 		model = User
@@ -36,12 +65,23 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 			)
 		return username
 
+	def validate_email(self, email):
+		if email and User.objects.filter(email__iexact=email).exists():
+			raise serializers.ValidationError(
+				'A user with that email already exists.',
+			)
+		return email
+
 	def create(self, validated_data):
 		try:
 			with transaction.atomic():
 				return User.objects.create_user(**validated_data)
 		except IntegrityError as exc:
-			# Two concurrent registrations can both pass validation.
+			# Two concurrent registrations can both pass validation; the
+			# violated index says which field collided.
+			diag = getattr(exc.__cause__, 'diag', None)
+			constraint = getattr(diag, 'constraint_name', None) or ''
+			field = 'email' if 'email' in constraint else 'username'
 			raise serializers.ValidationError({
-				'username': ['A user with that username already exists.'],
+				field: [f'A user with that {field} already exists.'],
 			}) from exc

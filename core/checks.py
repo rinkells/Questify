@@ -54,10 +54,11 @@ def check_admin_allowlist_sees_real_client_ip(app_configs, **kwargs):
 	return [Warning(
 		'ADMIN_ALLOWED_IPS contains a loopback address while DRF_NUM_PROXIES is 0.',
 		hint=(
-			'Behind a same-host reverse proxy every request appears to come '
-			'from loopback, so the allow-list admits all clients. Set '
-			'DRF_NUM_PROXIES to the number of trusted proxies, or replace '
-			'loopback with the real admin IPs.'
+			'Behind a reverse proxy every request appears to come from the '
+			'proxy itself (loopback, or the Docker gateway address when '
+			'reached through a published port), so the allow-list either '
+			'admits all clients or none. Set DRF_NUM_PROXIES to the number '
+			'of trusted proxies, or replace loopback with the real admin IPs.'
 		),
 		id='core.W001',
 	)]
