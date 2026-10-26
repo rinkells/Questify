@@ -65,23 +65,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 			)
 		return username
 
-	def validate_email(self, email):
-		if email and User.objects.filter(email__iexact=email).exists():
-			raise serializers.ValidationError(
-				'A user with that email already exists.',
-			)
-		return email
-
 	def create(self, validated_data):
 		try:
 			with transaction.atomic():
 				return User.objects.create_user(**validated_data)
 		except IntegrityError as exc:
-			# Two concurrent registrations can both pass validation; the
-			# violated index says which field collided.
-			diag = getattr(exc.__cause__, 'diag', None)
-			constraint = getattr(diag, 'constraint_name', None) or ''
-			field = 'email' if 'email' in constraint else 'username'
+			# Two concurrent registrations can both pass validation.
 			raise serializers.ValidationError({
-				field: [f'A user with that {field} already exists.'],
+				'username': ['A user with that username already exists.'],
 			}) from exc

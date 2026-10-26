@@ -80,7 +80,7 @@ class QuestService:
                 quest=quest,
                 completed_at__gte=day_start,
                 completed_at__lt=next_day_start,
-            ).first()
+            ).order_by('-completed_at').first()
             if existing_completion:
                 if existing_completion.status == QuestCompletion.CompletionStatus.FAILED:
                     raise QuestAlreadyFailedError(
@@ -127,6 +127,7 @@ class QuestService:
             status=QuestCompletion.CompletionStatus.COMPLETED,
             completed_at=now,
             xp_awarded=xp_awarded,
+            is_one_time=quest.quest_type == Quest.QuestType.ONE_TIME,
         )
         result = EventResult()
         dispatcher.dispatch(
@@ -176,7 +177,7 @@ class QuestService:
                 quest=quest,
                 completed_at__gte=day_start,
                 completed_at__lt=next_day_start,
-            ).first()
+            ).order_by('-completed_at').first()
         else:
             existing_completion = quest.completions.first()
 

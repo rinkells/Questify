@@ -1,5 +1,6 @@
 from datetime import timedelta
 import hashlib
+import io
 from ipaddress import ip_network
 from unittest.mock import patch
 
@@ -436,24 +437,6 @@ class HardeningTests(TestCase):
 		with self.assertRaises(IntegrityError):
 			user_model.objects.create_user(username='bob', password=self.password)
 
-	def test_duplicate_email_is_rejected(self):
-		client = APIClient()
-		first = client.post(
-			'/api/auth/register/',
-			{'username': 'mail-one', 'email': 'Dup@Example.com', 'password': self.password},
-			format='json',
-		)
-		cache.clear()
-		second = client.post(
-			'/api/auth/register/',
-			{'username': 'mail-two', 'email': 'dup@example.com', 'password': self.password},
-			format='json',
-		)
-
-		self.assertEqual(first.status_code, 201)
-		self.assertEqual(second.status_code, 400)
-		self.assertIn('email', second.data)
-
 	def test_oversized_passwords_are_rejected(self):
 		client = APIClient()
 		register = client.post(
@@ -496,15 +479,6 @@ class HardeningTests(TestCase):
 		self.assertEqual(response.status_code, 401)
 		self.assertEqual(str(response.data['detail']), 'Invalid token.')
 
-	def test_emails_are_unique_case_insensitively_in_the_database(self):
-		user_model = get_user_model()
-		user_model.objects.create_user('first', 'Same@Example.com', self.password)
-		user_model.objects.create_user('blank-one', '', self.password)
-		user_model.objects.create_user('blank-two', '', self.password)
-
-		with self.assertRaises(IntegrityError):
-			user_model.objects.create_user('second', 'same@example.com', self.password)
-
 	def test_login_accepts_any_case_of_the_username(self):
 		get_user_model().objects.create_user('Erin', password=self.password)
 
@@ -541,6 +515,113 @@ class HardeningTests(TestCase):
 	def test_suite_uses_its_own_redis_database(self):
 		self.assertTrue(settings.CACHES['default']['LOCATION'].endswith('/15'))
 
+	def test_registration_does_not_reveal_whether_an_email_has_an_account(self):
+		get_user_model().objects.create_user('known', 'known@example.com', self.password)
+		client = APIClient()
+		response = client.post(
+			'/api/auth/register/',
+			{'username': 'probe', 'email': 'KNOWN@example.com', 'password': self.password},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, 201)
+
+	def test_password_change_revokes_existing_tokens(self):
+		user = get_user_model().objects.create_user('rotator', password=self.password)
+		_, raw_token = HashedAPIToken.issue_for_user(user)
+		client = APIClient()
+		client.credentials(HTTP_AUTHORIZATION=f'Token {raw_token}')
+		self.assertEqual(client.get('/api/character/').status_code, 200)
+
+		user.set_password('An0ther-Str0ng-pass-71')
+		user.save()
+
+		self.assertEqual(client.get('/api/character/').status_code, 401)
+		self.assertFalse(HashedAPIToken.objects.filter(user=user).exists())
+
+	def test_token_survives_unrelated_user_changes(self):
+		user = get_user_model().objects.create_user('steady', password=self.password)
+		_, raw_token = HashedAPIToken.issue_for_user(user)
+		user.first_name = 'Steady'
+		user.save()
+		client = APIClient()
+		client.credentials(HTTP_AUTHORIZATION=f'Token {raw_token}')
+
+		self.assertEqual(client.get('/api/character/').status_code, 200)
+
+	def test_api_responses_are_not_cacheable(self):
+		get_user_model().objects.create_user('cachey', password=self.password)
+		response = APIClient().post(
+			'/api/auth/login/',
+			{'username': 'cachey', 'password': self.password},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, 200)
+		self.assertIn('no-store', response['Cache-Control'])
+
+	def test_missing_trailing_slash_is_a_plain_404(self):
+		response = APIClient().post('/api/auth/login', {}, format='json')
+
+		self.assertEqual(response.status_code, 404)
+
+	def test_character_update_parses_the_body_before_taking_the_row_lock(self):
+		user = get_user_model().objects.create_user('slow', password=self.password)
+		client = APIClient()
+		client.force_authenticate(user)
+		events = []
+
+		from core import views
+		original_get_object = views.CharacterView.get_object
+
+		def recording_get_object(view):
+			events.append('lock')
+			return original_get_object(view)
+
+		with patch.object(views.CharacterView, 'get_object', recording_get_object), 				patch('rest_framework.request.Request._parse', autospec=True,
+				      side_effect=lambda req: (events.append('parse'), ({}, {}))[1]):
+			client.patch('/api/character/', {}, format='json')
+
+		self.assertEqual(events[:2], ['parse', 'lock'])
+
+	def test_multipart_uploads_are_not_accepted(self):
+		response = APIClient().post(
+			'/api/auth/login/',
+			{'username': 'a', 'password': 'b', 'upload': io.BytesIO(b'z' * 1024)},
+			format='multipart',
+		)
+
+		self.assertEqual(response.status_code, 415)
+
+	def test_oversized_request_bodies_are_rejected(self):
+		body = '{"username": "a", "password": "b", "pad": "' + 'x' * 300_000 + '"}'
+
+		response = APIClient().generic(
+			'POST', '/api/auth/login/', body, content_type='application/json',
+		)
+
+		self.assertEqual(response.status_code, 413)
+		self.assertEqual(response.json(), {'detail': 'Request body too large.'})
+
+	def test_throttled_clients_bodies_are_not_parsed(self):
+		client = APIClient()
+		for attempt in range(5):
+			client.post(
+				'/api/auth/login/',
+				{'username': f'nobody-{attempt}', 'password': 'wrong'},
+				format='json',
+			)
+
+		with patch('rest_framework.request.Request._parse') as parse:
+			response = client.post(
+				'/api/auth/login/',
+				{'username': 'nobody-x', 'password': 'wrong'},
+				format='json',
+			)
+
+		self.assertEqual(response.status_code, 429)
+		parse.assert_not_called()
+
 
 class ConcurrentRegistrationTests(TransactionTestCase):
 	password = 'Cobalt-River-Planets-482!'
@@ -549,39 +630,113 @@ class ConcurrentRegistrationTests(TransactionTestCase):
 		cache.clear()
 		self.addCleanup(cache.clear)
 
-	def test_parallel_registrations_with_one_email_create_one_account(self):
+	def test_parallel_registrations_differing_only_in_case_create_one_account(self):
 		import threading
 		from django.db import connection
 
 		barrier = threading.Barrier(2)
 		statuses = []
 
-		def register(index):
+		def register(name):
 			try:
 				barrier.wait()
 				response = APIClient().post(
 					'/api/auth/register/',
-					{
-						'username': f'racer-{index}',
-						'email': 'race@example.com',
-						'password': self.password,
-					},
+					{'username': name, 'password': self.password},
 					format='json',
 				)
-				statuses.append((response.status_code, response.data))
+				statuses.append(response.status_code)
 			finally:
 				connection.close()
 
-		threads = [threading.Thread(target=register, args=(i,)) for i in range(2)]
+		threads = [threading.Thread(target=register, args=(n,)) for n in ('Racer', 'racer')]
 		for thread in threads:
 			thread.start()
 		for thread in threads:
 			thread.join()
 
 		self.assertEqual(
-			get_user_model().objects.filter(email__iexact='race@example.com').count(),
+			get_user_model().objects.filter(username__iexact='racer').count(),
 			1,
 		)
-		failures = [data for code, data in statuses if code == 400]
-		self.assertEqual(len(failures), 1)
-		self.assertIn('email', failures[0])
+		self.assertEqual(sorted(statuses), [201, 400])
+
+
+class AuthAuditFixTests(TestCase):
+	def setUp(self):
+		cache.clear()
+		self.addCleanup(cache.clear)
+
+	def _client(self, user):
+		_, raw_token = HashedAPIToken.issue_for_user(user)
+		client = APIClient()
+		client.credentials(HTTP_AUTHORIZATION=f'Token {raw_token}')
+		return client
+
+	def test_host_dependent_timezone_names_are_rejected(self):
+		user = get_user_model().objects.create_user(username='tz-localtime')
+
+		response = self._client(user).patch(
+			'/api/character/', {'timezone': 'localtime'}, format='json',
+		)
+
+		self.assertEqual(response.status_code, 400)
+
+	def test_a_failed_quest_also_blocks_timezone_changes_for_24_hours(self):
+		from quests.models import Quest, QuestCompletion
+
+		user = get_user_model().objects.create_user(username='tz-failed')
+		quest = Quest.objects.create(
+			user=user, title='q', quest_type='daily', xp_reward=25,
+		)
+		QuestCompletion.objects.create(
+			user=user, quest=quest, status='failed', xp_awarded=0,
+		)
+
+		response = self._client(user).patch(
+			'/api/character/', {'timezone': 'Asia/Bangkok'}, format='json',
+		)
+
+		self.assertEqual(response.status_code, 400)
+		self.assertIn('timezone', response.json())
+
+	def test_repeated_bad_tokens_are_throttled_per_ip(self):
+		with patch.dict(
+			'rest_framework.throttling.SimpleRateThrottle.THROTTLE_RATES',
+			{'auth_failure': '3/minute'},
+		):
+			client = APIClient()
+			codes = []
+			for attempt in range(5):
+				client.credentials(HTTP_AUTHORIZATION=f'Token bad-{attempt}')
+				codes.append(client.get('/api/character/').status_code)
+
+		self.assertEqual(codes, [401, 401, 401, 429, 429])
+
+	def test_requests_without_credentials_do_not_spend_the_failure_budget(self):
+		with patch.dict(
+			'rest_framework.throttling.SimpleRateThrottle.THROTTLE_RATES',
+			{'auth_failure': '2/minute'},
+		):
+			codes = [
+				APIClient().get('/api/character/').status_code for _ in range(5)
+			]
+
+		self.assertEqual(codes, [401] * 5)
+
+	@override_settings(
+		ADMIN_ALLOWED_NETWORKS=(ip_network('198.51.100.0/24'),),
+	)
+	def test_admin_login_fails_closed_when_the_cache_is_down(self):
+		with patch.object(
+			caches['default'].__class__,
+			'add',
+			side_effect=RedisError('down'),
+		):
+			response = APIClient().post(
+				'/admin/login/',
+				{'username': 'admin', 'password': 'incorrect'},
+				REMOTE_ADDR='198.51.100.92',
+			)
+
+		self.assertEqual(response.status_code, 503)

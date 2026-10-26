@@ -148,11 +148,13 @@ INSTALLED_APPS = [
 
 REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # No endpoint accepts file uploads. Leaving MultiPartParser enabled lets an
+    # unauthenticated client stream arbitrarily large files to temp storage.
     'DEFAULT_PARSER_CLASSES': [
         'core.parsers.SafeJSONParser',
         'rest_framework.parsers.FormParser',
-        'rest_framework.parsers.MultiPartParser',
     ],
+    'EXCEPTION_HANDLER': 'core.exceptions.api_exception_handler',
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
 	'DEFAULT_PERMISSION_CLASSES': [
@@ -171,6 +173,7 @@ REST_FRAMEWORK = {
 		'user': '1000/hour',
 		'login': '5/minute',
 		'register': '5/hour',
+		'auth_failure': '30/minute',
 	},
 	# Ignore spoofable X-Forwarded-For by default. Set this to the number of
 	# trusted proxies when requests arrive through a proxy that overwrites it.
@@ -221,6 +224,10 @@ QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER = int(
 )
 QUESTIFY_MAX_DESCRIPTION_LENGTH = 10_000
 
+# Requests are small JSON documents (the largest field is a 10,000-character
+# description); cap the body well below Django's 2.5 MB default.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 256 * 1024
+
 if QUESTIFY_XP_24H_CAP <= 0:
 	raise ImproperlyConfigured('QUESTIFY_XP_24H_CAP must be positive.')
 if QUESTIFY_MAX_QUESTS_PER_USER <= 0:
@@ -253,6 +260,7 @@ SPECTACULAR_SETTINGS = {
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'core.middleware.ApiNoStoreMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'core.middleware.AdminLoginRateLimitMiddleware',
@@ -264,6 +272,10 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'config.urls'
+
+# The API is addressed with trailing slashes only. Redirecting a slash-less
+# POST either raises in DEBUG or silently drops the body behind a 301.
+APPEND_SLASH = False
 
 TEMPLATES = [
     {

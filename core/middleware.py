@@ -4,7 +4,24 @@ from ipaddress import ip_address
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseNotFound
+from django.utils.cache import patch_cache_control
+from redis.exceptions import RedisError
 from rest_framework.throttling import BaseThrottle
+
+
+class ApiNoStoreMiddleware:
+	"""Keep API responses (login tokens, personal data) out of shared caches."""
+
+	prefix = '/api/'
+
+	def __init__(self, get_response):
+		self.get_response = get_response
+
+	def __call__(self, request):
+		response = self.get_response(request)
+		if request.path_info.startswith(self.prefix):
+			patch_cache_control(response, no_store=True, private=True)
+		return response
 
 
 class AdminLoginRateLimitMiddleware:
@@ -34,7 +51,11 @@ class AdminLoginRateLimitMiddleware:
 
 		ip_digest = hashlib.sha256(client_ip.encode('utf-8')).hexdigest()
 		cache_key = f'questify:admin-login:{ip_digest}'
-		attempts = self._increment(cache_key)
+		try:
+			attempts = self._increment(cache_key)
+		except RedisError:
+			# Fail closed: without the counter, password guessing is unbounded.
+			return HttpResponse('Service temporarily unavailable.', status=503)
 		if attempts > self.limit:
 			response = HttpResponse(
 				'Too many admin login attempts. Try again later.',
@@ -45,7 +66,10 @@ class AdminLoginRateLimitMiddleware:
 
 		response = self.get_response(request)
 		if response.status_code in (302, 303):
-			cache.delete(cache_key)
+			try:
+				cache.delete(cache_key)
+			except RedisError:
+				pass
 		return response
 
 	@staticmethod

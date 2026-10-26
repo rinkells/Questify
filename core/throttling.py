@@ -5,6 +5,7 @@ from redis.exceptions import RedisError
 from rest_framework.throttling import (
 	AnonRateThrottle,
 	ScopedRateThrottle,
+	SimpleRateThrottle,
 	UserRateThrottle,
 )
 
@@ -105,7 +106,16 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 
 		self.num_requests, self.duration = self.parse_rate(self.rate)
 		client_ip = self.get_ident(request)
-		identifiers = [f'ip:{client_ip}']
+		self._blocked_keys = []
+
+		# Count the per-IP bucket first: once it is exhausted the request body
+		# is never parsed, so a throttled client cannot make the server spend
+		# CPU decoding large payloads.
+		ip_key = self._key(f'ip:{client_ip}')
+		if self._increment(ip_key) > self.num_requests:
+			self._blocked_keys.append(ip_key)
+			return False
+
 		if self.scope == 'login':
 			data = request.data
 			username = data.get('username', '') if hasattr(data, 'get') else ''
@@ -114,14 +124,41 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 			).hexdigest()
 			# Scope the account counter to the client IP. A counter keyed on the
 			# username alone lets any third party lock the owner out of login.
-			identifiers.append(f'account:{client_ip}:{username_digest}')
-
-		self._blocked_keys = []
-		for identifier in identifiers:
-			key = self.cache_format % {
-				'scope': self.scope,
-				'ident': identifier,
-			}
-			if self._increment(key) > self.num_requests:
-				self._blocked_keys.append(key)
+			account_key = self._key(f'account:{client_ip}:{username_digest}')
+			if self._increment(account_key) > self.num_requests:
+				self._blocked_keys.append(account_key)
 		return not self._blocked_keys
+
+	def _key(self, identifier):
+		return self.cache_format % {'scope': self.scope, 'ident': identifier}
+
+
+class AuthFailureThrottle(AtomicThrottleMixin, SimpleRateThrottle):
+	"""Per-IP budget for failed token authentications.
+
+	DRF authenticates before it throttles, so requests with bad tokens never
+	reach the anon/user throttles. The authenticator consults this one instead:
+	``is_blocked`` before the token lookup, ``record_failure`` after a miss.
+	"""
+
+	scope = 'auth_failure'
+
+	def get_cache_key(self, request, view):
+		return self.cache_format % {
+			'scope': self.scope,
+			'ident': self.get_ident(request),
+		}
+
+	def is_blocked(self, request):
+		key = self.get_cache_key(request, None)
+		try:
+			blocked = (self.cache.get(key) or 0) >= self.num_requests
+		except RedisError:
+			logger.exception('Throttle cache unavailable for AuthFailureThrottle')
+			return False
+		if blocked:
+			self._blocked_keys = [key]
+		return blocked
+
+	def record_failure(self, request):
+		self._increment(self.get_cache_key(request, None))

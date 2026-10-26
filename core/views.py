@@ -31,6 +31,9 @@ class CharacterView(RetrieveUpdateAPIView):
 			Character.objects.get_or_create(user=self.request.user)
 			return queryset.get(user=self.request.user)
 
-	@transaction.atomic
 	def update(self, request, *args, **kwargs):
-		return super().update(request, *args, **kwargs)
+		# Parse the body before opening the transaction: get_object() takes the
+		# row lock, and a slow client must not hold it while the body trickles in.
+		request.data
+		with transaction.atomic():
+			return super().update(request, *args, **kwargs)
