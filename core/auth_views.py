@@ -33,6 +33,11 @@ class TokenLoginView(ObtainAuthToken):
 	throttle_classes = (AtomicScopedRateThrottle,)
 	throttle_scope = 'login'
 
+	@extend_schema(description=(
+		'Issue a token, revoking every token the account had: one session '
+		'per account. Of two simultaneous logins both answer 200, but only '
+		'the token issued last stays valid.'
+	))
 	def post(self, request, *args, **kwargs):
 		serializer = self.get_serializer(data=request.data)
 		serializer.is_valid(raise_exception=True)

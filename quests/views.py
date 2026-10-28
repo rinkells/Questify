@@ -2,10 +2,12 @@ from django.conf import settings
 from drf_spectacular.utils import extend_schema
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework import status, viewsets
+# DRF's version also turns a malformed id (ValueError/TypeError) into a
+# 404; Django's raises it, a 500 on /api/quests/abc/complete/.
+from rest_framework.generics import get_object_or_404
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -213,9 +215,13 @@ class QuestCategoryViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 
 	@transaction.atomic
 	def perform_update(self, serializer):
-		category = QuestCategory.objects.select_for_update().get(
+		# A 404 when a concurrent DELETE removed the category after
+		# get_object(), as for quests.
+		category = get_object_or_404(
+			QuestCategory.objects.select_for_update().filter(
+				user=self.request.user,
+			),
 			pk=serializer.instance.pk,
-			user=self.request.user,
 		)
 		serializer.instance = category
 		serializer.save()

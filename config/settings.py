@@ -144,6 +144,7 @@ INSTALLED_APPS = [
     'quests.apps.QuestsConfig',
     'events.apps.EventsConfig',
     'achievements.apps.AchievementsConfig',
+    'skills.apps.SkillsConfig',
 ]
 
 REST_FRAMEWORK = {
@@ -174,6 +175,8 @@ REST_FRAMEWORK = {
 		'login': '5/minute',
 		'register': '5/hour',
 		'auth_failure': '30/minute',
+		# Distinct client networks that may try one account's password.
+		'login_networks': '20/hour',
 	},
 	# Ignore spoofable X-Forwarded-For by default. Set this to the number of
 	# trusted proxies when requests arrive through a proxy that overwrites it.

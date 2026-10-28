@@ -8,6 +8,8 @@ from django.utils.cache import patch_cache_control
 from redis.exceptions import RedisError
 from rest_framework.throttling import BaseThrottle
 
+from .throttling import client_network
+
 
 class ApiNoStoreMiddleware:
 	"""Keep API responses (login tokens, personal data) out of shared caches."""
@@ -49,7 +51,11 @@ class AdminLoginRateLimitMiddleware:
 		if request.method != 'POST' or request.path_info != self.path:
 			return self.get_response(request)
 
-		ip_digest = hashlib.sha256(client_ip.encode('utf-8')).hexdigest()
+		# The allow-list above needs the exact address; the counter is per
+		# network, like the API throttles.
+		ip_digest = hashlib.sha256(
+			client_network(client_ip).encode('utf-8'),
+		).hexdigest()
 		cache_key = f'questify:admin-login:{ip_digest}'
 		try:
 			attempts = self._increment(cache_key)

@@ -1,56 +1,66 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Count
 
 from events.dispatcher import dispatcher
 from events.event_types import (
     AchievementUnlockedEvent,
     Event,
-    LevelUpEvent,
     QuestCompletedEvent,
+    SkillUnlockedEvent,
 )
-from quests.models import QuestCompletion, Streak
+from quests import selectors
+from quests.models import Streak
 
-from .conditions import AchievementEvaluationContext, EVALUATOR_REGISTRY
+from .conditions import (
+    AchievementEvaluationContext,
+    EVALUATOR_REGISTRY,
+    skills_unlocked_count,
+)
 from .models import Achievement, UserAchievement
 
 
 User = get_user_model()
 
+# Locked conditions each event is checked against. A quest completion checks
+# every type, so an achievement added later still reaches users who already
+# meet it on their next completion; that includes level_reached, since the
+# level-up happens earlier in the same completion. A skill unlock changes only
+# the unlocked-skill count.
+CONDITION_TYPES_BY_EVENT = {
+    SkillUnlockedEvent: {Achievement.ConditionType.SKILLS_UNLOCKED_COUNT},
+}
+
 
 class AchievementCheckHandler:
     def handle(self, event: Event):
-        if not isinstance(event, (QuestCompletedEvent, LevelUpEvent)):
+        if not isinstance(event, (QuestCompletedEvent, SkillUnlockedEvent)):
             return
 
         user = User.objects.select_related('character').get(pk=event.user_id)
         unlocked_ids = UserAchievement.objects.filter(
             user=user,
         ).values_list('achievement_id', flat=True)
-        achievements = list(Achievement.objects.exclude(id__in=unlocked_ids))
+        achievements = Achievement.objects.exclude(id__in=unlocked_ids)
+        event_condition_types = CONDITION_TYPES_BY_EVENT.get(type(event))
+        if event_condition_types is not None:
+            achievements = achievements.filter(
+                condition_type__in=event_condition_types,
+            )
+        achievements = list(achievements)
         if not achievements:
             return
 
         condition_types = {achievement.condition_type for achievement in achievements}
         context = AchievementEvaluationContext()
-        completed_quests = QuestCompletion.objects.filter(
-            user=user,
-            status=QuestCompletion.CompletionStatus.COMPLETED,
-        )
         if 'quest_count_by_category' in condition_types:
-            category_counts = dict(
-                completed_quests
-                .values('category_name_at_completion')
-                .annotate(completed_count=Count('id'))
-                .values_list(
-                    'category_name_at_completion',
-                    'completed_count',
-                )
-            )
-            context.completed_quests_by_category = category_counts
-            if 'quest_count' in condition_types:
-                context.completed_quest_count = sum(category_counts.values())
+            stats = selectors.completion_stats(user.id)
+            context.completed_quest_count = stats.completed_count
+            context.completed_quests_by_category = stats.counts_by_category
         elif 'quest_count' in condition_types:
-            context.completed_quest_count = completed_quests.count()
+            # A plain COUNT; the per-category aggregate is not needed.
+            context.completed_quest_count = selectors.completed_count(user.id)
+
+        if 'skills_unlocked_count' in condition_types:
+            context.skills_unlocked_count = skills_unlocked_count(user)
 
         if 'streak_length' in condition_types:
             context.longest_streak = (
@@ -73,8 +83,8 @@ class AchievementCheckHandler:
                 user=user,
                 achievement=achievement,
             )
-            # LevelUpEvent shares the completion's result so achievements
-            # unlocked by a level-up are reported in the same response.
+            # SkillUnlockedEvent carries the unlock's result, so achievements
+            # it unlocks are reported in the unlock response.
             if event.result is not None:
                 event.result.achievements_unlocked.append(achievement.id)
             dispatcher.dispatch(

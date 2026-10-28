@@ -48,3 +48,10 @@ class LevelUpEvent(Event):
 class AchievementUnlockedEvent(Event):
     user_id: int
     achievement_id: int
+
+
+@dataclass(frozen=True)
+class SkillUnlockedEvent(Event):
+    user_id: int
+    skill_id: int
+    result: EventResult | None = None

@@ -661,6 +661,40 @@ class ConcurrentRegistrationTests(TransactionTestCase):
 		)
 		self.assertEqual(sorted(statuses), [201, 400])
 
+	def test_parallel_registrations_equal_only_under_upper_create_one_account(self):
+		import threading
+		from django.db import connection
+
+		barrier = threading.Barrier(2)
+		statuses = []
+
+		def register(name):
+			try:
+				barrier.wait()
+				response = APIClient().post(
+					'/api/auth/register/',
+					{'username': name, 'password': self.password},
+					format='json',
+				)
+				statuses.append(response.status_code)
+			finally:
+				connection.close()
+
+		# 'ı' (dotless i) upper-cases to 'I', so username__iexact sees one
+		# name, but LOWER() keeps them apart.
+		names = ('audit-race', 'aud\u0131t-race')
+		threads = [threading.Thread(target=register, args=(n,)) for n in names]
+		for thread in threads:
+			thread.start()
+		for thread in threads:
+			thread.join()
+
+		self.assertEqual(
+			get_user_model().objects.filter(username__iexact='audit-race').count(),
+			1,
+		)
+		self.assertEqual(sorted(statuses), [201, 400])
+
 
 class AuthAuditFixTests(TestCase):
 	def setUp(self):
@@ -740,3 +774,128 @@ class AuthAuditFixTests(TestCase):
 			)
 
 		self.assertEqual(response.status_code, 503)
+
+
+class SecurityAuditFixTests(TestCase):
+	password = 'Cobalt-River-Planets-482!'
+
+	def setUp(self):
+		cache.clear()
+		self.addCleanup(cache.clear)
+
+	def _login(self, username, remote_addr='198.51.100.50'):
+		return APIClient().post(
+			'/api/auth/login/',
+			{'username': username, 'password': 'incorrect'},
+			format='json',
+			REMOTE_ADDR=remote_addr,
+		)
+
+	def test_usernames_equal_under_upper_are_unique_in_the_database(self):
+		user_model = get_user_model()
+		user_model.objects.create_user(username='aud\u0131t-db', password=self.password)
+
+		with self.assertRaises(IntegrityError):
+			user_model.objects.create_user(username='audit-db', password=self.password)
+
+	def test_login_prefers_the_exact_username_over_another_upper_match(self):
+		from django.db import connection
+
+		# Rows from before migration 0010, which refuses to run while such
+		# pairs exist; the test's transaction restores the index.
+		with connection.cursor() as cursor:
+			cursor.execute('DROP INDEX auth_user_username_upper_uniq')
+		user_model = get_user_model()
+		user_model.objects.create_user(username='aud\u0131t-x', password='Other-Pass-777!')
+		user_model.objects.create_user(username='audit-x', password=self.password)
+
+		response = APIClient().post(
+			'/api/auth/login/',
+			{'username': 'audit-x', 'password': self.password},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, 200)
+
+	def test_inactive_users_token_is_indistinguishable_and_revoked(self):
+		user = get_user_model().objects.create_user(username='inactive-token')
+		_, raw_token = HashedAPIToken.issue_for_user(user)
+		user.is_active = False
+		user.save(update_fields=('is_active',))
+		client = APIClient()
+		client.credentials(HTTP_AUTHORIZATION=f'Token {raw_token}')
+
+		response = client.get('/api/character/')
+
+		self.assertEqual(response.status_code, 401)
+		self.assertEqual(response.json(), {'detail': 'Invalid token.'})
+		self.assertFalse(HashedAPIToken.objects.filter(user=user).exists())
+
+	def test_overflowing_json_numbers_are_a_400_not_a_500(self):
+		user = get_user_model().objects.create_user(username='overflow')
+		client = APIClient()
+		client.force_authenticate(user=user)
+
+		responses = [
+			client.generic(
+				'POST',
+				'/api/quests/',
+				'{"title": "t", "quest_type": "daily", "category": %s}' % number,
+				content_type='application/json',
+			)
+			for number in ('1e999', '-1e999')
+		]
+
+		self.assertEqual([r.status_code for r in responses], [400, 400])
+		self.assertIn('out of range', responses[0].json()['detail'])
+
+	def test_ipv6_addresses_in_one_64_share_a_login_bucket(self):
+		codes = [
+			self._login('ipv6-user', f'2001:db8:1:2::{index:x}').status_code
+			for index in range(1, 7)
+		]
+
+		self.assertEqual(codes, [400, 400, 400, 400, 400, 429])
+
+	def test_ipv4_mapped_addresses_share_the_ipv4_bucket(self):
+		codes = [
+			self._login('mapped-user', address).status_code
+			for address in ['198.51.100.60', '::ffff:198.51.100.60'] * 3
+		]
+
+		self.assertEqual(codes, [400, 400, 400, 400, 400, 429])
+
+	def test_login_network_ceiling_refuses_only_new_networks(self):
+		with patch.dict(
+			'rest_framework.throttling.SimpleRateThrottle.THROTTLE_RATES',
+			{'login_networks': '3/hour'},
+		):
+			first = [
+				self._login('targeted', f'203.0.113.{index}').status_code
+				for index in range(1, 4)
+			]
+			new_network = self._login('targeted', '203.0.113.4')
+			known_network = self._login('targeted', '203.0.113.1')
+			other_account = self._login('someone-else', '203.0.113.4')
+
+		self.assertEqual(first, [400, 400, 400])
+		self.assertEqual(new_network.status_code, 429)
+		self.assertIn('Retry-After', new_network)
+		self.assertEqual(known_network.status_code, 400)
+		self.assertEqual(other_account.status_code, 400)
+
+	def test_login_network_ceiling_fails_closed_when_the_cache_is_down(self):
+		calls = []
+		real_add = caches['default'].__class__.add
+
+		def add(cache_self, key, *args, **kwargs):
+			calls.append(key)
+			if 'account-network:' in key:
+				raise RedisError('down')
+			return real_add(cache_self, key, *args, **kwargs)
+
+		with patch.object(caches['default'].__class__, 'add', add):
+			response = self._login('cache-down')
+
+		self.assertEqual(response.status_code, 429)
+		self.assertTrue(any('account-network:' in key for key in calls))
