@@ -9,10 +9,33 @@ User = get_user_model()
 
 # Bound the work done hashing/validating a password supplied by a client.
 MAX_PASSWORD_LENGTH = 128
+MAX_USERNAME_LENGTH = 150
+
+
+def resolve_login_username(username):
+	"""Return the stored username a login with ``username`` authenticates as.
+
+	Usernames are unique under UPPER(), the comparison username__iexact makes
+	(core migrations 0006 and 0010), and are NFKC-normalized first, so "erin"
+	and a fullwidth "ｅｒｉｎ" both mean the account stored as "Erin". An exact
+	match still wins, and an ambiguous one is not resolved: with two matching
+	rows, a name must never be taken for the other account and lock its
+	owner out. Without a single match the normalized name comes back.
+	"""
+	username = User.normalize_username(username)
+	matches = list(
+		User.objects.filter(username__iexact=username)
+		.values_list('username', flat=True)[:2]
+	)
+	if username in matches:
+		return username
+	if len(matches) == 1:
+		return matches[0]
+	return username
 
 
 class LoginSerializer(AuthTokenSerializer):
-	username = serializers.CharField(write_only=True, max_length=150)
+	username = serializers.CharField(write_only=True, max_length=MAX_USERNAME_LENGTH)
 	# Looser than the registration limit so accounts created before that limit
 	# existed can still log in; this only bounds the hashing work per request.
 	password = serializers.CharField(
@@ -22,20 +45,7 @@ class LoginSerializer(AuthTokenSerializer):
 	)
 
 	def validate(self, attrs):
-		# Usernames are unique under UPPER(), the comparison username__iexact
-		# makes (core migrations 0006 and 0010), so "erin" means the account
-		# stored as "Erin". An exact match still wins, and an ambiguous one is
-		# not resolved: with two matching rows, a name must never be taken for
-		# the other account and lock its owner out.
-		username = User.normalize_username(attrs.get('username', ''))
-		matches = list(
-			User.objects.filter(username__iexact=username)
-			.values_list('username', flat=True)[:2]
-		)
-		if username in matches:
-			attrs['username'] = username
-		elif len(matches) == 1:
-			attrs['username'] = matches[0]
+		attrs['username'] = resolve_login_username(attrs.get('username', ''))
 		return super().validate(attrs)
 
 

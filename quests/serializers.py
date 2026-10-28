@@ -2,7 +2,7 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Quest, QuestCategory
+from .models import Quest, QuestCategory, QuestCompletion
 
 
 class QuestCategorySerializer(serializers.ModelSerializer):
@@ -76,3 +76,10 @@ class QuestCompleteResponseSerializer(serializers.Serializer):
         child=serializers.IntegerField(),
     )
     streak_length = serializers.IntegerField()
+
+
+class QuestFailResponseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuestCompletion
+        fields = ('id', 'status')
+        read_only_fields = fields

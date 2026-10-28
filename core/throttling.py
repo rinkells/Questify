@@ -147,7 +147,7 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 			data = request.data
 			username = data.get('username', '') if hasattr(data, 'get') else ''
 			username_digest = hashlib.sha256(
-				str(username).strip().casefold().encode('utf-8'),
+				self._account_name(username).casefold().encode('utf-8'),
 			).hexdigest()
 			# Scope the account counter to the client IP. A counter keyed on the
 			# username alone lets any third party lock the owner out of login.
@@ -194,6 +194,23 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 			except RedisError:
 				logger.exception('Throttle cache unavailable for login networks')
 			self._blocked_keys.append(count_key)
+
+	@staticmethod
+	def _account_name(username):
+		"""The account a login attempt targets, as login itself resolves it.
+
+		Keyed on the raw name, every NFKC or case variant ('ｅｒｉｎ', 'ERIN')
+		of one account would get its own counters, and the network ceiling
+		would never fill. Input the login serializer rejects anyway (too long,
+		NUL characters, which PostgreSQL refuses) is not looked up.
+		"""
+		from .auth_serializers import MAX_USERNAME_LENGTH, resolve_login_username
+
+		# Trimmed like the serializer's CharField trims it.
+		username = str(username).strip()
+		if len(username) > MAX_USERNAME_LENGTH or '\x00' in username:
+			return username
+		return resolve_login_username(username)
 
 	def _key(self, identifier):
 		return self.cache_format % {'scope': self.scope, 'ident': identifier}

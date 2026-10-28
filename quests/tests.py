@@ -1281,3 +1281,26 @@ def test_completion_does_not_relock_the_character_needlessly(user, quest):
 	assert len(character_locks) == 3
 	user.character.refresh_from_db()
 	assert user.character.xp == quest.xp_reward
+
+
+@pytest.mark.parametrize(('action', 'success'), [('complete', '200'), ('fail', '201')])
+def test_complete_and_fail_are_documented_without_a_request_body(action, success):
+	from drf_spectacular.generators import SchemaGenerator
+
+	operation = SchemaGenerator().get_schema(public=True)['paths'][
+		f'/api/quests/{{id}}/{action}/'
+	]['post']
+
+	assert 'requestBody' not in operation
+	assert set(operation['responses']) == {success, '400', '404'}
+
+
+@pytest.mark.django_db
+def test_fail_response_matches_its_schema(api_client, user, quest):
+	api_client.force_authenticate(user=user)
+
+	response = api_client.post(f'/api/quests/{quest.id}/fail/', format='json')
+
+	assert response.status_code == 201
+	completion = QuestCompletion.objects.get(quest=quest)
+	assert response.data == {'id': completion.id, 'status': 'failed'}

@@ -13,12 +13,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from core.models import Character
+from core.serializers import DetailSerializer
 
 from .models import Quest, QuestCategory, QuestCompletion
 from .permissions import IsOwner
 from .serializers import (
 	QuestCategorySerializer,
 	QuestCompleteResponseSerializer,
+	QuestFailResponseSerializer,
 	QuestSerializer,
 )
 from .services import (
@@ -142,7 +144,16 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 		quest.archived_at = timezone.now()
 		quest.save(update_fields=('is_active', 'archived_at', 'updated_at'))
 
-	@extend_schema(responses=QuestCompleteResponseSerializer)
+	# Neither action reads a body; without request=None the schema would ask
+	# for the viewset's QuestSerializer.
+	@extend_schema(
+		request=None,
+		responses={
+			200: QuestCompleteResponseSerializer,
+			400: DetailSerializer,
+			404: DetailSerializer,
+		},
+	)
 	@action(detail=True, methods=('post',))
 	def complete(self, request, pk=None):
 		try:
@@ -169,6 +180,14 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			)
 		return Response(QuestCompleteResponseSerializer(result).data)
 
+	@extend_schema(
+		request=None,
+		responses={
+			201: QuestFailResponseSerializer,
+			400: DetailSerializer,
+			404: DetailSerializer,
+		},
+	)
 	@action(detail=True, methods=('post',))
 	def fail(self, request, pk=None):
 		try:
@@ -194,7 +213,7 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 				status=status.HTTP_400_BAD_REQUEST,
 			)
 		return Response(
-			{'id': completion.id, 'status': completion.status},
+			QuestFailResponseSerializer(completion).data,
 			status=status.HTTP_201_CREATED,
 		)
 
