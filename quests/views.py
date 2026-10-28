@@ -36,6 +36,19 @@ class OwnerViewSetMixin:
 			user=self.request.user,
 		).order_by('pk')
 
+	def get_locked_object(self):
+		"""get_object(), but with the row locked FOR UPDATE."""
+		lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+		queryset = self.filter_queryset(
+			self.get_queryset().select_for_update(),
+		)
+		obj = get_object_or_404(
+			queryset,
+			**{lookup_url_kwarg: self.kwargs[lookup_url_kwarg]},
+		)
+		self.check_object_permissions(self.request, obj)
+		return obj
+
 
 class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 	queryset = Quest.objects.all()
@@ -48,18 +61,6 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 
 	def get_queryset(self):
 		return super().get_queryset().filter(archived_at__isnull=True)
-
-	def get_locked_object(self):
-		lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
-		queryset = self.filter_queryset(
-			self.get_queryset().select_for_update(),
-		)
-		quest = get_object_or_404(
-			queryset,
-			**{lookup_url_kwarg: self.kwargs[lookup_url_kwarg]},
-		)
-		self.check_object_permissions(self.request, quest)
-		return quest
 
 	def _lock_category(self, serializer):
 		"""Lock the chosen category so a concurrent DELETE cannot orphan the FK.

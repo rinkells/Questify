@@ -26,11 +26,13 @@ from core.auth_views import RegisterView, TokenLoginView, TokenLogoutView
 from achievements.views import AchievementListView, UnlockedAchievementListView
 from quests.views import QuestCategoryViewSet, QuestViewSet
 from skills.views import SkillTreeView, SkillUnlockView
+from wallet.views import RewardViewSet, WalletTransactionListView
 
 
 router = DefaultRouter()
 router.register('quests', QuestViewSet, basename='quest')
 router.register('quest-categories', QuestCategoryViewSet, basename='quest-category')
+router.register('rewards', RewardViewSet, basename='reward')
 
 urlpatterns = [
 	path('healthz/', healthz, name='healthz'),
@@ -55,6 +57,11 @@ urlpatterns = [
         'api/skills/<int:skill_id>/unlock/',
         SkillUnlockView.as_view(),
         name='skill-unlock',
+    ),
+    path(
+        'api/wallet/transactions/',
+        WalletTransactionListView.as_view(),
+        name='wallet-transaction-list',
     ),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(

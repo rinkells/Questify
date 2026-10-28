@@ -8,6 +8,12 @@ from rest_framework import serializers
 from .models import Character, Stat
 
 
+class DetailSerializer(serializers.Serializer):
+    """The ``{'detail': '...'}`` body of every client-facing API error."""
+
+    detail = serializers.CharField()
+
+
 class StatSerializer(serializers.ModelSerializer):
     stat_type = serializers.CharField(source='stat_type.name', read_only=True)
 
@@ -109,6 +115,7 @@ class CharacterSerializer(serializers.ModelSerializer):
             'level',
             'xp',
             'xp_to_next_level',
+            'coins',
             'timezone',
             'current_streak',
             'stats',
@@ -118,6 +125,7 @@ class CharacterSerializer(serializers.ModelSerializer):
             'level',
             'xp',
             'xp_to_next_level',
+            'coins',
             'current_streak',
             'stats',
         )

@@ -67,6 +67,8 @@ class QuestSerializer(serializers.ModelSerializer):
 
 class QuestCompleteResponseSerializer(serializers.Serializer):
     xp_gained = serializers.IntegerField()
+    # One coin per XP awarded, so the 24-hour XP cap limits coins too.
+    coins_gained = serializers.IntegerField()
     leveled_up = serializers.BooleanField()
     new_level = serializers.IntegerField(allow_null=True)
     stats_updated = serializers.DictField()

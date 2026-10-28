@@ -93,6 +93,24 @@ or `Learning` do not. To make progress, use the category names the skill tree us
 (for the example tree: `Study` and `Health`). Renaming a category later does not move
 completions recorded under its old name.
 
+## Wallet and rewards
+
+Completing a quest also earns coins: one per XP awarded, so the 24-hour XP cap limits
+coins too. Coins are a separate balance (`coins` in `GET /api/character/`); spending
+them never lowers XP, levels, achievements or skill progress.
+
+- `/api/rewards/` manages your own rewards (`title`, `description`, `cost` from 1 to
+  100,000, `is_active`). `DELETE` archives a reward: it disappears from the API but
+  still counts toward the per-user reward limit, and past redemptions keep it.
+- `POST /api/rewards/<id>/redeem/` spends `cost` coins and answers 201 with the
+  redemption and the remaining `balance`. It answers 400 when there are not enough
+  coins, the reward is inactive or the redemption limit for the last 24 hours is
+  reached. A reward can be redeemed any number of times.
+- `GET /api/wallet/transactions/` lists every change of the balance, newest first:
+  `quest_reward`, `redemption` (with the reward's title at the time) and
+  `initial_grant`, which gave characters that existed before the wallet their earned
+  XP as coins once.
+
 ## Tests and checks
 
 ```sh

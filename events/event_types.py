@@ -5,6 +5,7 @@ from datetime import datetime
 @dataclass
 class EventResult:
     xp_gained: int = 0
+    coins_gained: int = 0
     leveled_up: bool = False
     new_level: int | None = None
     stats_updated: dict[str, int] = field(default_factory=dict)
@@ -14,6 +15,7 @@ class EventResult:
     def as_dict(self):
         return {
             'xp_gained': self.xp_gained,
+            'coins_gained': self.coins_gained,
             'leveled_up': self.leveled_up,
             'new_level': self.new_level,
             'stats_updated': self.stats_updated,
@@ -34,6 +36,8 @@ class QuestCompletedEvent(Event):
     completed_at: datetime
     result: EventResult | None = None
     xp_awarded: int | None = None
+    # The QuestCompletion row, so a handler can tie what it writes to it.
+    completion_id: int | None = None
 
 
 @dataclass(frozen=True)
