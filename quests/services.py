@@ -154,8 +154,9 @@ class QuestService:
         now = timezone.now()
         if quest.archived_at is not None or not quest.is_active:
             raise ValidationError('This quest is inactive and cannot be failed.')
-        if quest.deadline is not None and quest.deadline < now:
-            raise ValidationError('This quest deadline has passed and cannot be failed.')
+        # No deadline check: a missed deadline is exactly what a failure
+        # records. Completing and moving the deadline stay closed after it,
+        # so refusing this too would leave archiving as the only way out.
 
         category_name = ''
         if quest.category_id:

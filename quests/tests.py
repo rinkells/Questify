@@ -407,7 +407,7 @@ def test_one_time_fail_is_single_and_blocks_later_completion(api_client, user):
 
 
 @pytest.mark.django_db
-def test_expired_quest_cannot_be_failed(api_client, user):
+def test_expired_quest_can_be_failed_but_not_completed(api_client, user):
 	quest = Quest.objects.create(
 		user=user,
 		title='Expired quest',
@@ -417,11 +417,19 @@ def test_expired_quest_cannot_be_failed(api_client, user):
 	)
 	api_client.force_authenticate(user=user)
 
-	response = api_client.post(f'/api/quests/{quest.id}/fail/')
+	completed = api_client.post(f'/api/quests/{quest.id}/complete/')
+	failed = api_client.post(f'/api/quests/{quest.id}/fail/')
+	failed_again = api_client.post(f'/api/quests/{quest.id}/fail/')
 
-	assert response.status_code == 400
-	assert 'deadline' in str(response.data).lower()
-	assert quest.completions.count() == 0
+	assert completed.status_code == 400
+	assert 'deadline' in completed.data['detail'].lower()
+	assert failed.status_code == 201
+	assert failed.data['status'] == QuestCompletion.CompletionStatus.FAILED
+	# The usual one-time rule still applies after the deadline.
+	assert failed_again.status_code == 400
+	assert list(quest.completions.values_list('status', 'xp_awarded')) == [
+		(QuestCompletion.CompletionStatus.FAILED, 0),
+	]
 
 
 @pytest.mark.django_db
@@ -1153,53 +1161,6 @@ def test_category_delete_races_complete_and_assign_without_server_errors(user):
 	statuses = []
 	failures = []
 
-	def call(method, url, payload=None):
-		client = APIClient(raise_request_exception=False)
-		client.force_authenticate(user=user)
-		try:
-			barrier.wait()
-			response = getattr(client, method)(url, payload, format='json')
-			statuses.append(response.status_code)
-		except Exception as exc:  # pragma: no cover - reported below
-			failures.append(exc)
-		finally:
-			connection.close()
-
-	for index in range(8):
-		category = QuestCategory.objects.create(user=user, name=f'race-{index}')
-		quest = Quest.objects.create(
-			user=user,
-			title='racer',
-			quest_type=Quest.QuestType.ONE_TIME,
-			xp_reward=50,
-			category=category,
-		)
-		barrier = threading.Barrier(3)
-		jobs = [
-			('delete', f'/api/quest-categories/{category.pk}/', None),
-			('post', f'/api/quests/{quest.pk}/complete/', None),
-			('post', '/api/quests/', {
-				'title': 'new', 'quest_type': 'daily', 'category': category.pk,
-			}),
-		]
-		threads = [threading.Thread(target=call, args=job) for job in jobs]
-		for thread in threads:
-			thread.start()
-		for thread in threads:
-			thread.join()
-
-	assert not failures
-	assert statuses and max(statuses) < 500
-
-
-@pytest.mark.django_db(transaction=True)
-def test_category_delete_races_complete_and_assign_without_server_errors(user):
-	import threading
-	from django.db import connection
-
-	statuses = []
-	failures = []
-
 	def call(barrier, method, url, payload=None):
 		client = APIClient(raise_request_exception=False)
 		client.force_authenticate(user=user)
@@ -1239,3 +1200,84 @@ def test_category_delete_races_complete_and_assign_without_server_errors(user):
 
 	assert not failures
 	assert statuses and max(statuses) < 500
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('action', ['complete', 'fail'])
+@pytest.mark.parametrize('quest_id', ['abc', '%00'])
+def test_malformed_quest_id_is_a_404_not_a_500(api_client, user, action, quest_id):
+	api_client.force_authenticate(user=user)
+
+	response = api_client.post(f'/api/quests/{quest_id}/{action}/')
+
+	assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_fractional_category_id_is_rejected_not_truncated(api_client, user):
+	category = QuestCategory.objects.create(user=user, name='Study')
+	api_client.force_authenticate(user=user)
+
+	response = api_client.post(
+		'/api/quests/',
+		{'title': 'q', 'quest_type': 'daily', 'category': category.pk + 0.5},
+		format='json',
+	)
+
+	assert response.status_code == 400
+	assert 'category' in response.data
+	assert not Quest.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_category_update_racing_a_delete_is_a_404(user):
+	import threading
+	from django.db import connection
+
+	category = QuestCategory.objects.create(user=user, name='Racing')
+	outcome = []
+
+	def rename():
+		client = APIClient(raise_request_exception=False)
+		client.force_authenticate(user=user)
+		try:
+			outcome.append(client.patch(
+				f'/api/quest-categories/{category.pk}/',
+				{'name': 'Renamed'},
+				format='json',
+			).status_code)
+		finally:
+			connection.close()
+
+	# The DELETE locks the row and commits while the PATCH, past
+	# get_object(), waits for that lock in perform_update().
+	with transaction.atomic():
+		QuestCategory.objects.select_for_update().get(pk=category.pk)
+		thread = threading.Thread(target=rename, daemon=True)
+		thread.start()
+		thread.join(timeout=0.5)
+		assert thread.is_alive(), outcome
+		QuestCategory.objects.filter(pk=category.pk).delete()
+	thread.join(timeout=10)
+
+	assert outcome == [404]
+
+
+@pytest.mark.django_db
+def test_completion_does_not_relock_the_character_needlessly(user, quest):
+	from django.db import connection
+	from django.test.utils import CaptureQueriesContext
+
+	with CaptureQueriesContext(connection) as queries:
+		QuestService.complete_quest(quest.id, user)
+
+	character_locks = [
+		query['sql']
+		for query in queries
+		if 'FROM "core_character"' in query['sql'] and 'FOR UPDATE' in query['sql']
+	]
+	# complete_quest, LevelCheckHandler and StreakService.record_completion;
+	# the XP handler's UPDATE locks the row without reading it first.
+	assert len(character_locks) == 3
+	user.character.refresh_from_db()
+	assert user.character.xp == quest.xp_reward

@@ -25,8 +25,13 @@ class Character(models.Model):
 	@classmethod
 	def locked_for_user_id(cls, user_id):
 		"""Return the user's row locked FOR UPDATE, recreating it if it is missing."""
-		cls.objects.get_or_create(user_id=user_id)
-		return cls.objects.select_for_update().get(user_id=user_id)
+		# One query when the row exists, which is every time but the first
+		# after a character went missing.
+		character = cls.objects.select_for_update().filter(user_id=user_id).first()
+		if character is None:
+			cls.objects.get_or_create(user_id=user_id)
+			character = cls.objects.select_for_update().get(user_id=user_id)
+		return character
 
 	def __str__(self):
 		return f'{self.user} character'

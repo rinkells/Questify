@@ -191,6 +191,9 @@ class Streak(models.Model):
 		on_delete=models.CASCADE,
 		related_name='streaks',
 	)
+	# Reserved for per-category streaks, which nothing writes yet: every row
+	# today is the general streak (NULL). The unique constraint below already
+	# covers both kinds.
 	quest_category = models.ForeignKey(
 		QuestCategory,
 		on_delete=models.CASCADE,
