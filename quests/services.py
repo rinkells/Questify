@@ -137,6 +137,7 @@ class QuestService:
                 completed_at=completion.completed_at,
                 result=result,
                 xp_awarded=xp_awarded,
+                completion_id=completion.id,
             )
         )
         return result.as_dict()

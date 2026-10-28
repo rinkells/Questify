@@ -884,6 +884,37 @@ class SecurityAuditFixTests(TestCase):
 		self.assertEqual(known_network.status_code, 400)
 		self.assertEqual(other_account.status_code, 400)
 
+	def test_login_network_ceiling_counts_every_spelling_of_one_account(self):
+		# Login NFKC-normalizes the name and matches it case-insensitively, so
+		# all of these try the password of the same account.
+		get_user_model().objects.create_user(username='Spelled', password=self.password)
+		fullwidth = 'ｓｐｅｌｌｅｄ'
+		bold = '\U0001d42c\U0001d429\U0001d41e\U0001d425\U0001d425\U0001d41e\U0001d41d'
+		with patch.dict(
+			'rest_framework.throttling.SimpleRateThrottle.THROTTLE_RATES',
+			{'login_networks': '3/hour'},
+		):
+			lowercase = self._login('spelled', '203.0.113.1')
+			uppercase = self._login('SPELLED', '203.0.113.2')
+			correct = APIClient().post(
+				'/api/auth/login/',
+				{'username': fullwidth, 'password': self.password},
+				format='json',
+				REMOTE_ADDR='203.0.113.3',
+			)
+			fourth_network = self._login(bold, '203.0.113.4')
+
+		self.assertEqual([lowercase.status_code, uppercase.status_code], [400, 400])
+		self.assertEqual(correct.status_code, 200)
+		self.assertEqual(fourth_network.status_code, 429)
+
+	def test_login_with_unusable_username_is_a_400_not_a_500(self):
+		# The throttle reads the name before the serializer rejects it.
+		for username in ('nul\x00name', 'x' * 10_000, ['list'], 12345):
+			with self.subTest(username=repr(username)[:20]):
+				self.assertEqual(self._login(username).status_code, 400)
+				cache.clear()
+
 	def test_login_network_ceiling_fails_closed_when_the_cache_is_down(self):
 		calls = []
 		real_add = caches['default'].__class__.add

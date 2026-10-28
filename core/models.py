@@ -16,6 +16,10 @@ class Character(models.Model):
 	level = models.PositiveIntegerField(default=1)
 	xp = models.PositiveBigIntegerField(default=0)
 	xp_to_next_level = models.PositiveBigIntegerField(default=100)
+	# Spendable balance, kept apart from xp, which levels, achievements and
+	# skill requirements read and which must therefore only grow. Every change
+	# writes a wallet.WalletTransaction; the column refuses negative values.
+	coins = models.PositiveBigIntegerField(default=0)
 	timezone = models.CharField(
 		max_length=64,
 		default='UTC',

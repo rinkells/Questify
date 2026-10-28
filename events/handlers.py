@@ -13,13 +13,22 @@ from .event_types import Event, LevelUpEvent, QuestCompletedEvent
 logger = logging.getLogger(__name__)
 
 
+def awarded_xp(event: QuestCompletedEvent):
+    """The XP a completion awards; coins follow the same amount.
+
+    ``complete_quest`` passes the amount it capped. An event dispatched
+    without one awards the quest's full reward.
+    """
+    if event.xp_awarded is not None:
+        return event.xp_awarded
+    return Quest.objects.get(pk=event.quest_id).xp_reward
+
+
 class XPRewardHandler:
     def handle(self, event: Event):
         if not isinstance(event, QuestCompletedEvent):
             return
-        xp_awarded = event.xp_awarded
-        if xp_awarded is None:
-            xp_awarded = Quest.objects.get(pk=event.quest_id).xp_reward
+        xp_awarded = awarded_xp(event)
         # The UPDATE locks the row itself; reading it first is not needed.
         updated = Character.objects.filter(user_id=event.user_id).update(
             xp=F('xp') + xp_awarded,

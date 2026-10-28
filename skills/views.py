@@ -4,11 +4,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .serializers import (
-    DetailSerializer,
-    SkillTreeNodeSerializer,
-    SkillUnlockResponseSerializer,
-)
+from core.serializers import DetailSerializer
+
+from .serializers import SkillTreeNodeSerializer, SkillUnlockResponseSerializer
 from .services import (
     SkillNotFoundError,
     SkillParentLockedError,

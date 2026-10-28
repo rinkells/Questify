@@ -143,6 +143,9 @@ INSTALLED_APPS = [
     'core.apps.CoreConfig',
     'quests.apps.QuestsConfig',
     'events.apps.EventsConfig',
+    # Before achievements: its quest-reward handler then runs ahead of the
+    # achievement check, as handlers run in registration order.
+    'wallet.apps.WalletConfig',
     'achievements.apps.AchievementsConfig',
     'skills.apps.SkillsConfig',
 ]
@@ -225,6 +228,12 @@ QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER_PER_DAY = int(
 QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER = int(
 	os.getenv('QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER', '10000'),
 )
+QUESTIFY_MAX_REWARDS_PER_USER = int(
+	os.getenv('QUESTIFY_MAX_REWARDS_PER_USER', '100'),
+)
+QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H = int(
+	os.getenv('QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H', '100'),
+)
 QUESTIFY_MAX_DESCRIPTION_LENGTH = 10_000
 
 # Requests are small JSON documents (the largest field is a 10,000-character
@@ -246,6 +255,12 @@ if QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER_PER_DAY <= 0:
 if QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER <= 0:
 	raise ImproperlyConfigured(
 		'QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER must be positive.'
+	)
+if QUESTIFY_MAX_REWARDS_PER_USER <= 0:
+	raise ImproperlyConfigured('QUESTIFY_MAX_REWARDS_PER_USER must be positive.')
+if QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H <= 0:
+	raise ImproperlyConfigured(
+		'QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H must be positive.'
 	)
 
 SPECTACULAR_SETTINGS = {

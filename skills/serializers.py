@@ -31,7 +31,3 @@ class SkillUnlockResponseSerializer(serializers.Serializer):
     achievements_unlocked = serializers.ListField(
         child=serializers.IntegerField(),
     )
-
-
-class DetailSerializer(serializers.Serializer):
-    detail = serializers.CharField()
