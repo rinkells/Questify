@@ -22,13 +22,20 @@ class LoginSerializer(AuthTokenSerializer):
 	)
 
 	def validate(self, attrs):
-		# Usernames are unique case-insensitively (core migration 0006), so
-		# "erin" unambiguously means the account stored as "Erin".
-		stored_username = User.objects.filter(
-			username__iexact=User.normalize_username(attrs.get('username', '')),
-		).values_list('username', flat=True).first()
-		if stored_username is not None:
-			attrs['username'] = stored_username
+		# Usernames are unique under UPPER(), the comparison username__iexact
+		# makes (core migrations 0006 and 0010), so "erin" means the account
+		# stored as "Erin". An exact match still wins, and an ambiguous one is
+		# not resolved: with two matching rows, a name must never be taken for
+		# the other account and lock its owner out.
+		username = User.normalize_username(attrs.get('username', ''))
+		matches = list(
+			User.objects.filter(username__iexact=username)
+			.values_list('username', flat=True)[:2]
+		)
+		if username in matches:
+			attrs['username'] = username
+		elif len(matches) == 1:
+			attrs['username'] = matches[0]
 		return super().validate(attrs)
 
 
