@@ -144,6 +144,7 @@ INSTALLED_APPS = [
     'quests.apps.QuestsConfig',
     'events.apps.EventsConfig',
     'achievements.apps.AchievementsConfig',
+    'skills.apps.SkillsConfig',
 ]
 
 REST_FRAMEWORK = {

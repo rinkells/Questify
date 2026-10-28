@@ -12,6 +12,7 @@ class Achievement(models.Model):
         )
         STREAK_LENGTH = 'streak_length', 'Streak length'
         LEVEL_REACHED = 'level_reached', 'Level reached'
+        SKILLS_UNLOCKED_COUNT = 'skills_unlocked_count', 'Skills unlocked count'
 
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True, null=True)
@@ -21,7 +22,10 @@ class Achievement(models.Model):
         max_length=40,
         choices=ConditionType.choices,
     )
-    condition_config = models.JSONField(default=dict)
+    # No default: a config without a threshold is unattainable, so an
+    # achievement created without one would silently never unlock. Without
+    # a default, leaving it out fails the INSERT instead.
+    condition_config = models.JSONField()
 
     def clean(self):
         super().clean()
