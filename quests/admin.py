@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import Quest, QuestCategory, QuestCompletion, QuestStatReward, Streak
+from .models import (
+	DailyBonus,
+	Quest,
+	QuestCategory,
+	QuestCompletion,
+	QuestStatReward,
+	Streak,
+)
 
 
 @admin.register(QuestCategory)
@@ -60,6 +67,30 @@ class QuestCompletionAdmin(admin.ModelAdmin):
 		'xp_awarded_is_estimate',
 	)
 	list_filter = ('status', 'completed_at')
+
+	def has_add_permission(self, request):
+		return False
+
+	def has_change_permission(self, request, obj=None):
+		return False
+
+	def has_delete_permission(self, request, obj=None):
+		return False
+
+
+@admin.register(DailyBonus)
+class DailyBonusAdmin(admin.ModelAdmin):
+	"""View-only: a bonus is paid together with its XP and coins."""
+
+	readonly_fields = (
+		'user',
+		'local_date',
+		'awarded_at',
+		'xp_awarded',
+		'quest_completion',
+	)
+	list_display = ('user', 'local_date', 'awarded_at', 'xp_awarded')
+	list_filter = ('local_date',)
 
 	def has_add_permission(self, request):
 		return False

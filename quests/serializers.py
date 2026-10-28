@@ -65,7 +65,13 @@ class QuestSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'xp_reward', 'created_at', 'updated_at')
 
 
+class DailyBonusAwardSerializer(serializers.Serializer):
+    xp = serializers.IntegerField()
+    coins = serializers.IntegerField()
+
+
 class QuestCompleteResponseSerializer(serializers.Serializer):
+    # The quest's own reward; a daily bonus is reported in daily_bonus.
     xp_gained = serializers.IntegerField()
     # One coin per XP awarded, so the 24-hour XP cap limits coins too.
     coins_gained = serializers.IntegerField()
@@ -76,6 +82,25 @@ class QuestCompleteResponseSerializer(serializers.Serializer):
         child=serializers.IntegerField(),
     )
     streak_length = serializers.IntegerField()
+    # Paid when this completion finished the day's daily and habit quests.
+    daily_bonus = DailyBonusAwardSerializer(allow_null=True)
+
+
+class DailyBonusStatusSerializer(serializers.Serializer):
+    """A ``services.DailyBonusStatus``: today's progress toward the bonus."""
+
+    # The character's local date.
+    date = serializers.DateField()
+    # Completions the bonus needs: every quest of the set, and at least
+    # QUESTIFY_DAILY_BONUS_MIN_QUESTS, so it exceeds total below the minimum.
+    required = serializers.IntegerField()
+    completed = serializers.IntegerField()
+    # Active daily and habit quests, less those whose deadline is at or before
+    # the start of the local day. One missed later today stays in, uncompleted.
+    total = serializers.IntegerField()
+    awarded = serializers.BooleanField()
+    # The XP paid today, or the XP on offer until then.
+    xp = serializers.IntegerField()
 
 
 class QuestFailResponseSerializer(serializers.ModelSerializer):

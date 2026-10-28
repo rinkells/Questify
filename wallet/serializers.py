@@ -54,6 +54,7 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
             'balance_after',
             'quest_completion',
             'redemption',
+            'daily_bonus',
             'reward_title',
             'created_at',
         )

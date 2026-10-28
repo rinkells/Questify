@@ -7,7 +7,9 @@ import pytest
 from django.apps import apps
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from django.db import DataError, IntegrityError, connection, transaction
+from django.db import DataError, IntegrityError, connection, migrations, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.db.migrations.recorder import MigrationRecorder
 from django.db.models import F, Sum
 from django.test import RequestFactory, override_settings
 from django.utils import timezone
@@ -16,7 +18,7 @@ from rest_framework.test import APIClient
 from core.admin import CharacterAdmin
 from core.models import Character
 from events.dispatcher import dispatcher
-from quests.models import Quest, QuestCompletion
+from quests.models import DailyBonus, Quest, QuestCompletion
 
 from .admin import RewardAdmin
 from .models import MAX_REWARD_COST, Reward, RewardRedemption, WalletTransaction
@@ -25,6 +27,9 @@ from .services import WalletService
 
 User = get_user_model()
 initial_balances = importlib.import_module('wallet.migrations.0002_initial_balances')
+daily_bonus_transactions = importlib.import_module(
+    'wallet.migrations.0003_daily_bonus_transactions',
+)
 
 
 @pytest.fixture
@@ -110,6 +115,48 @@ def test_xp_cap_limits_coins_too(api_client, user):
     assert coins(user) == Character.objects.get(user=user).xp == 60
     assert WalletTransaction.objects.filter(user=user).count() == 2
     assert_ledger_matches(user)
+
+
+def earn_daily_bonus(api_client, user):
+    for n in range(3):
+        quest = Quest.objects.create(
+            user=user,
+            title=f'Daily {n}',
+            quest_type=Quest.QuestType.DAILY,
+            xp_reward=25,
+        )
+        api_client.post(f'/api/quests/{quest.id}/complete/', format='json')
+    return DailyBonus.objects.get(user=user)
+
+
+@pytest.mark.django_db
+def test_daily_bonus_coins_get_a_transaction_of_their_own(api_client, user):
+    bonus = earn_daily_bonus(api_client, user)
+
+    response = api_client.get('/api/wallet/transactions/')
+
+    assert [
+        (row['kind'], row['amount'], row['daily_bonus'], row['quest_completion'])
+        for row in response.data['results'][:2]
+    ] == [
+        ('daily_bonus', 25, bonus.id, None),
+        ('quest_reward', 25, None, bonus.quest_completion_id),
+    ]
+    assert coins(user) == Character.objects.get(user=user).xp == 100
+    assert_ledger_matches(user)
+
+
+@pytest.mark.django_db
+def test_database_pays_a_daily_bonus_once(user):
+    bonus = DailyBonus.objects.create(
+        user=user,
+        local_date=timezone.localdate(),
+        xp_awarded=25,
+    )
+    WalletService.credit_daily_bonus(user.pk, 25, bonus.id)
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        WalletService.credit_daily_bonus(user.pk, 25, bonus.id)
 
 
 @pytest.mark.django_db
@@ -582,3 +629,71 @@ def test_a_used_wallet_cannot_be_reverted(api_client, user, use_wallet):
 
     assert coins(user) == balance
     assert WalletTransaction.objects.filter(kind='initial_grant').exists()
+
+
+# --- Daily bonus rollback (wallet migration 0003) ----------------------------
+
+
+# Reverting to it unapplies wallet 0003, then quests 0015.
+BEFORE_DAILY_BONUS = [('quests', '0014_backfill_is_one_time')]
+DAILY_BONUS_MIGRATIONS = {
+    ('quests', '0015_daily_bonus'),
+    ('wallet', '0003_daily_bonus_transactions'),
+}
+
+
+def applied_migrations():
+    return set(MigrationRecorder(connection).applied_migrations())
+
+
+def migrate_to(targets):
+    MigrationExecutor(connection).migrate(targets)
+
+
+def migrate_to_latest():
+    executor = MigrationExecutor(connection)
+    executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+def test_daily_bonus_guard_is_the_first_step_reverted():
+    # Operations are reverted last to first.
+    guard = daily_bonus_transactions.Migration.operations[-1]
+
+    assert isinstance(guard, migrations.RunPython)
+    assert guard.reverse_code is daily_bonus_transactions.refuse_to_drop_paid_bonuses
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reverting_paid_daily_bonuses_stops_before_any_change(api_client, user):
+    bonus = earn_daily_bonus(api_client, user)
+    applied = applied_migrations()
+
+    try:
+        with pytest.raises(RuntimeError, match='already been paid') as refusal:
+            migrate_to(BEFORE_DAILY_BONUS)
+        assert applied_migrations() == applied
+    finally:
+        # Leave the schema whole for the tests that follow, whatever happened.
+        migrate_to_latest()
+
+    assert 'second time' in str(refusal.value)
+    assert DailyBonus.objects.get() == bonus
+    assert WalletTransaction.objects.get(kind='daily_bonus').daily_bonus == bonus
+    assert coins(user) == Character.objects.get(user=user).xp == 100
+    assert_ledger_matches(user)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reverting_without_daily_bonuses_goes_through(user):
+    give_coins(user, 50)
+
+    try:
+        migrate_to(BEFORE_DAILY_BONUS)
+        assert not applied_migrations() & DAILY_BONUS_MIGRATIONS
+        assert 'quests_dailybonus' not in connection.introspection.table_names()
+    finally:
+        migrate_to_latest()
+
+    assert DAILY_BONUS_MIGRATIONS <= applied_migrations()
+    assert coins(user) == 50
+    assert_ledger_matches(user)

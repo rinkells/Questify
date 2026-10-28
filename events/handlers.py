@@ -30,13 +30,15 @@ class XPRewardHandler:
             return
         xp_awarded = awarded_xp(event)
         # The UPDATE locks the row itself; reading it first is not needed.
+        # The daily bonus is added here too, so the level check sees it.
         updated = Character.objects.filter(user_id=event.user_id).update(
-            xp=F('xp') + xp_awarded,
+            xp=F('xp') + xp_awarded + event.bonus_xp,
         )
         if not updated:
             raise Character.DoesNotExist(f'No character for user {event.user_id}')
         if event.result is not None:
             event.result.xp_gained = xp_awarded
+            event.result.bonus_xp_gained = event.bonus_xp
 
 
 class StatUpdateHandler:

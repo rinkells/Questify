@@ -1,8 +1,8 @@
 # Questify
 
 Questify is a gamified productivity REST API: quests, character XP and levels,
-stats, streaks, achievements, and a skill tree. Built with Python 3.12, Django 5.2, Django REST
-framework, PostgreSQL 15+, and Redis.
+stats, streaks, achievements, and a skill tree. Built with Python 3.12, Django 5.2,
+Django REST framework, PostgreSQL 15+, and Redis.
 
 ## Quick start
 
@@ -57,6 +57,18 @@ Tokens expire after 30 days, and logging in again replaces the previous token.
   the daily streak, and can level the character up and unlock achievements.
 - XP rewards are set by the server (25 for daily and habit quests, 50 for one-time
   quests) and capped per 24 hours.
+- Completing every active daily and habit quest of a day pays a daily bonus of 25 XP
+  and as many coins, once per day in the character's timezone. It needs at least 3
+  such quests. A quest whose deadline is at or before the start of the day (local
+  midnight) does not count. A deadline missed later in the day is a failure today:
+  like a quest failed today, it rules the bonus out for that day, even if it passes
+  after the other quests were completed. The bonus counts toward the 24-hour XP cap
+  and is cut to what the cap leaves. The `complete` response reports it in
+  `daily_bonus` (`{"xp": ..., "coins": ...}` or `null`), apart from `xp_gained` and
+  `coins_gained`.
+- `GET /api/quests/daily-bonus/` shows the day's progress: `date` (local), `total`
+  quests in the set, `completed`, `required` (completions the bonus needs: all of
+  them, and at least 3), `awarded` and `xp`.
 - `DELETE` on a quest archives it: it disappears from the API but still counts toward
   the per-user quest limit.
 - Achievements for quests in a category (`quest_count_by_category`) compare the
@@ -107,9 +119,9 @@ them never lowers XP, levels, achievements or skill progress.
   coins, the reward is inactive or the redemption limit for the last 24 hours is
   reached. A reward can be redeemed any number of times.
 - `GET /api/wallet/transactions/` lists every change of the balance, newest first:
-  `quest_reward`, `redemption` (with the reward's title at the time) and
-  `initial_grant`, which gave characters that existed before the wallet their earned
-  XP as coins once.
+  `quest_reward`, `daily_bonus`, `redemption` (with the reward's title at the time)
+  and `initial_grant`, which gave characters that existed before the wallet their
+  earned XP as coins once.
 
 ## Tests and checks
 
