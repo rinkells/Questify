@@ -185,6 +185,58 @@ class QuestCompletion(models.Model):
 		return f'{quest_title}: {self.status}'
 
 
+class DailyBonus(models.Model):
+	"""Bonus XP for completing every daily and habit quest of a local day.
+
+	``local_date`` is the character's local date when the bonus was paid. Only
+	paid bonuses are stored: one the 24-hour XP cap cut to nothing leaves no
+	row, so a later completion that day can still earn it.
+	"""
+
+	user = models.ForeignKey(
+		settings.AUTH_USER_MODEL,
+		on_delete=models.CASCADE,
+		related_name='daily_bonuses',
+		editable=False,
+	)
+	local_date = models.DateField(editable=False)
+	awarded_at = models.DateTimeField(default=timezone.now, editable=False)
+	xp_awarded = models.PositiveIntegerField(editable=False)
+	# The completion that finished the day.
+	quest_completion = models.OneToOneField(
+		QuestCompletion,
+		on_delete=models.SET_NULL,
+		related_name='daily_bonus',
+		null=True,
+		blank=True,
+		editable=False,
+	)
+
+	class Meta:
+		indexes = [
+			models.Index(
+				fields=('user', 'awarded_at'),
+				name='daily_bonus_user_date_idx',
+			),
+		]
+		constraints = [
+			# The service checks the same key under the character lock. After
+			# a timezone change a local date can come round again; it then
+			# has no second bonus rather than a failed completion.
+			models.UniqueConstraint(
+				fields=('user', 'local_date'),
+				name='one_daily_bonus_per_user_and_date',
+			),
+			models.CheckConstraint(
+				condition=Q(xp_awarded__gt=0),
+				name='daily_bonus_xp_awarded_positive',
+			),
+		]
+
+	def __str__(self):
+		return f'{self.user}: {self.local_date} (+{self.xp_awarded})'
+
+
 class Streak(models.Model):
 	user = models.ForeignKey(
 		settings.AUTH_USER_MODEL,

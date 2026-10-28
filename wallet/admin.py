@@ -68,6 +68,7 @@ class WalletTransactionAdmin(ReadOnlyAdmin):
         'balance_after',
         'quest_completion',
         'redemption',
+        'daily_bonus',
         'created_at',
     )
     list_display = ('user', 'kind', 'amount', 'balance_after', 'created_at')

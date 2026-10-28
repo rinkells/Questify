@@ -4,7 +4,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from quests.models import QuestCompletion
+from quests.models import DailyBonus, QuestCompletion
 
 MAX_REWARD_COST = 100_000
 
@@ -94,6 +94,7 @@ class WalletTransaction(models.Model):
         QUEST_REWARD = 'quest_reward', 'Quest reward'
         REDEMPTION = 'redemption', 'Redemption'
         INITIAL_GRANT = 'initial_grant', 'Initial grant'
+        DAILY_BONUS = 'daily_bonus', 'Daily bonus'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -114,6 +115,15 @@ class WalletTransaction(models.Model):
     )
     redemption = models.OneToOneField(
         RewardRedemption,
+        on_delete=models.SET_NULL,
+        related_name='wallet_transaction',
+        null=True,
+        blank=True,
+        editable=False,
+    )
+    # One-to-one, so the database pays a daily bonus once.
+    daily_bonus = models.OneToOneField(
+        DailyBonus,
         on_delete=models.SET_NULL,
         related_name='wallet_transaction',
         null=True,

@@ -11,10 +11,22 @@ from django.utils import timezone
 
 from core.models import Character, Stat, StatType
 
-from .admin import QuestAdmin, QuestCompletionAdmin
-from .models import Quest, QuestCategory, QuestCompletion, QuestStatReward, Streak
+from .admin import DailyBonusAdmin, QuestAdmin, QuestCompletionAdmin
+from .models import (
+	DailyBonus,
+	Quest,
+	QuestCategory,
+	QuestCompletion,
+	QuestStatReward,
+	Streak,
+)
 from .serializers import QuestSerializer
-from .services import QuestAlreadyCompletedError, QuestService, StreakService
+from .services import (
+	QuestAlreadyCompletedError,
+	QuestService,
+	StreakService,
+	local_day,
+)
 
 
 User = get_user_model()
@@ -1304,3 +1316,450 @@ def test_fail_response_matches_its_schema(api_client, user, quest):
 	assert response.status_code == 201
 	completion = QuestCompletion.objects.get(quest=quest)
 	assert response.data == {'id': completion.id, 'status': 'failed'}
+
+
+# --- Daily bonus -------------------------------------------------------------
+
+
+def make_bonus_quests(user, count=3, quest_type=Quest.QuestType.DAILY):
+	return [
+		Quest.objects.create(
+			user=user,
+			title=f'Bonus quest {index}',
+			quest_type=quest_type,
+			xp_reward=25,
+		)
+		for index in range(count)
+	]
+
+
+def complete_all(user, quests):
+	return [QuestService.complete_quest(quest.id, user) for quest in quests]
+
+
+def local_day_start(user):
+	character = Character.objects.get(user=user)
+	return local_day(timezone.now(), character.timezone)[1]
+
+
+@pytest.mark.django_db
+def test_completing_every_daily_and_habit_quest_pays_the_daily_bonus(
+	api_client,
+	user,
+):
+	quests = [
+		*make_bonus_quests(user, 2),
+		*make_bonus_quests(user, 1, quest_type=Quest.QuestType.HABIT),
+	]
+	api_client.force_authenticate(user=user)
+
+	responses = [
+		api_client.post(f'/api/quests/{quest.id}/complete/', format='json')
+		for quest in quests
+	]
+
+	assert [response.data['daily_bonus'] for response in responses] == [
+		None,
+		None,
+		{'xp': 25, 'coins': 25},
+	]
+	# The quest's own reward is reported apart from the bonus.
+	assert responses[-1].data['xp_gained'] == 25
+	assert responses[-1].data['coins_gained'] == 25
+	bonus = DailyBonus.objects.get(user=user)
+	assert bonus.xp_awarded == 25
+	assert bonus.local_date == datetime.now(datetime_timezone.utc).date()
+	assert bonus.quest_completion == QuestCompletion.objects.get(quest=quests[-1])
+	character = Character.objects.get(user=user)
+	assert character.xp == character.coins == 100
+
+
+@pytest.mark.django_db
+def test_daily_bonus_xp_reaches_the_level_check(user):
+	results = complete_all(user, make_bonus_quests(user, 3))
+
+	# 75 quest XP stays below the 100 of level 2; the bonus crosses it.
+	assert results[-1]['leveled_up'] is True
+	assert results[-1]['new_level'] == 2
+	assert Character.objects.get(user=user).level == 2
+
+
+@pytest.mark.django_db
+@override_settings(QUESTIFY_DAILY_BONUS_XP=40, QUESTIFY_DAILY_BONUS_MIN_QUESTS=1)
+def test_daily_bonus_follows_the_active_settings(user):
+	results = complete_all(user, make_bonus_quests(user, 1))
+
+	assert results[-1]['daily_bonus'] == {'xp': 40, 'coins': 40}
+
+
+@pytest.mark.django_db
+def test_daily_bonus_needs_the_minimum_number_of_quests(api_client, user):
+	results = complete_all(user, make_bonus_quests(user, 2))
+	api_client.force_authenticate(user=user)
+
+	response = api_client.get('/api/quests/daily-bonus/')
+
+	assert [result['daily_bonus'] for result in results] == [None, None]
+	assert not DailyBonus.objects.exists()
+	assert response.status_code == 200
+	assert (
+		response.data['total'],
+		response.data['completed'],
+		response.data['required'],
+		response.data['awarded'],
+	) == (2, 2, 3, False)
+
+
+@pytest.mark.django_db
+def test_a_quest_failed_today_blocks_the_daily_bonus(user):
+	first, *others = make_bonus_quests(user, 3)
+
+	QuestService.fail_quest(first.id, user)
+	results = complete_all(user, others)
+
+	assert [result['daily_bonus'] for result in results] == [None, None]
+	assert not DailyBonus.objects.exists()
+
+
+@pytest.mark.django_db
+def test_daily_bonus_ignores_one_time_inactive_archived_and_expired_quests(user):
+	quests = make_bonus_quests(user, 3)
+	Quest.objects.create(
+		user=user,
+		title='One-time',
+		quest_type=Quest.QuestType.ONE_TIME,
+		xp_reward=50,
+	)
+	Quest.objects.create(
+		user=user,
+		title='Paused',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+		is_active=False,
+	)
+	Quest.objects.create(
+		user=user,
+		title='Archived',
+		quest_type=Quest.QuestType.HABIT,
+		xp_reward=25,
+		is_active=False,
+		archived_at=timezone.now(),
+	)
+	# Its deadline passed just before the local day began.
+	Quest.objects.create(
+		user=user,
+		title='Expired',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+		deadline=local_day_start(user) - timedelta(seconds=1),
+	)
+
+	results = complete_all(user, quests)
+
+	assert results[-1]['daily_bonus'] == {'xp': 25, 'coins': 25}
+
+
+@pytest.mark.django_db
+def test_quest_completed_before_its_deadline_stays_in_the_daily_bonus_set(user):
+	with_deadline, *others = make_bonus_quests(user, 3)
+	Quest.objects.filter(pk=with_deadline.pk).update(
+		deadline=timezone.now() + timedelta(hours=1),
+	)
+	QuestService.complete_quest(with_deadline.id, user)
+	# The deadline passes after the completion, within the same day.
+	Quest.objects.filter(pk=with_deadline.pk).update(
+		deadline=timezone.now() - timedelta(seconds=1),
+	)
+
+	results = complete_all(user, others)
+
+	assert results[-1]['daily_bonus'] == {'xp': 25, 'coins': 25}
+
+
+@pytest.mark.django_db
+def test_deadline_at_the_start_of_the_local_day_leaves_the_daily_bonus_set(user):
+	quests = make_bonus_quests(user, 3)
+	# Due at local midnight: counted as due before the day began.
+	Quest.objects.create(
+		user=user,
+		title='Due at midnight',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+		deadline=local_day_start(user),
+	)
+
+	results = complete_all(user, quests)
+
+	assert QuestService.daily_bonus_status(user).total == 3
+	assert results[-1]['daily_bonus'] == {'xp': 25, 'coins': 25}
+
+
+@pytest.mark.django_db
+def test_deadline_a_second_into_the_local_day_keeps_the_quest_in_the_set(user):
+	quests = make_bonus_quests(user, 3)
+	Quest.objects.create(
+		user=user,
+		title='Due a second after midnight',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+		deadline=local_day_start(user) + timedelta(seconds=1),
+	)
+
+	results = complete_all(user, quests)
+
+	assert QuestService.daily_bonus_status(user).total == 4
+	assert results[-1]['daily_bonus'] is None
+
+
+def move_deadline(quest, delta):
+	Quest.objects.filter(pk=quest.pk).update(deadline=timezone.now() + delta)
+
+
+def assert_the_missed_quest_blocked_the_bonus(api_client, user, results):
+	# Three of four quests completed; the fourth missed its deadline today.
+	api_client.force_authenticate(user=user)
+	response = api_client.get('/api/quests/daily-bonus/')
+
+	assert [result['daily_bonus'] for result in results] == [None, None, None]
+	assert not DailyBonus.objects.exists()
+	assert response.status_code == 200
+	assert (
+		response.data['total'],
+		response.data['completed'],
+		response.data['awarded'],
+	) == (4, 3, False)
+
+
+@pytest.mark.django_db
+def test_deadline_missed_today_after_the_others_blocks_the_daily_bonus(
+	api_client,
+	user,
+):
+	*others, missed = make_bonus_quests(user, 4)
+	move_deadline(missed, timedelta(hours=1))
+	results = complete_all(user, others)
+
+	# The deadline passes later the same day, with nothing left to complete.
+	move_deadline(missed, -timedelta(seconds=1))
+
+	assert_the_missed_quest_blocked_the_bonus(api_client, user, results)
+
+
+@pytest.mark.django_db
+def test_deadline_missed_today_before_the_others_blocks_the_daily_bonus(
+	api_client,
+	user,
+):
+	*others, missed = make_bonus_quests(user, 4)
+	move_deadline(missed, -timedelta(seconds=1))
+
+	results = complete_all(user, others)
+
+	# The same outcome as when the deadline passes after the completions.
+	assert_the_missed_quest_blocked_the_bonus(api_client, user, results)
+
+
+@pytest.mark.django_db
+def test_quest_failed_before_its_deadline_blocks_the_daily_bonus_after_it(
+	api_client,
+	user,
+):
+	*others, failed = make_bonus_quests(user, 4)
+	move_deadline(failed, timedelta(hours=1))
+	QuestService.fail_quest(failed.id, user)
+	move_deadline(failed, -timedelta(seconds=1))
+
+	results = complete_all(user, others)
+
+	assert_the_missed_quest_blocked_the_bonus(api_client, user, results)
+
+
+@pytest.mark.django_db
+def test_daily_bonus_is_paid_once_per_local_day(user):
+	complete_all(user, make_bonus_quests(user, 3))
+	added_later = Quest.objects.create(
+		user=user,
+		title='Added after the bonus',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+	)
+
+	result = QuestService.complete_quest(added_later.id, user)
+
+	assert result['xp_gained'] == 25
+	assert result['daily_bonus'] is None
+	assert DailyBonus.objects.filter(user=user).count() == 1
+	assert Character.objects.get(user=user).xp == 4 * 25 + 25
+
+
+@pytest.mark.django_db
+def test_a_local_date_repeated_by_a_timezone_change_gets_no_second_bonus(user):
+	# Paid for this date in an earlier zone, more than 24 hours ago.
+	DailyBonus.objects.create(
+		user=user,
+		local_date=datetime.now(datetime_timezone.utc).date(),
+		awarded_at=timezone.now() - timedelta(hours=25),
+		xp_awarded=25,
+	)
+
+	results = complete_all(user, make_bonus_quests(user, 3))
+
+	assert results[-1]['daily_bonus'] is None
+	assert DailyBonus.objects.filter(user=user).count() == 1
+
+
+@pytest.mark.django_db
+def test_database_keeps_one_paid_daily_bonus_per_user_and_date(user):
+	day = date(2026, 10, 28)
+	DailyBonus.objects.create(user=user, local_date=day, xp_awarded=25)
+
+	with pytest.raises(IntegrityError), transaction.atomic():
+		DailyBonus.objects.create(user=user, local_date=day, xp_awarded=25)
+	with pytest.raises(IntegrityError), transaction.atomic():
+		DailyBonus.objects.create(
+			user=user,
+			local_date=day + timedelta(days=1),
+			xp_awarded=0,
+		)
+
+
+@pytest.mark.django_db
+@override_settings(QUESTIFY_XP_24H_CAP=90)
+def test_daily_bonus_is_cut_to_the_xp_left_under_the_cap(user):
+	results = complete_all(user, make_bonus_quests(user, 3))
+
+	assert results[-1]['daily_bonus'] == {'xp': 15, 'coins': 15}
+	assert DailyBonus.objects.get(user=user).xp_awarded == 15
+	character = Character.objects.get(user=user)
+	assert character.xp == character.coins == 90
+
+
+@pytest.mark.django_db
+@override_settings(QUESTIFY_XP_24H_CAP=110)
+def test_daily_bonus_counts_toward_the_24_hour_cap(user):
+	quests = make_bonus_quests(user, 3)
+	one_time = Quest.objects.create(
+		user=user,
+		title='After the bonus',
+		quest_type=Quest.QuestType.ONE_TIME,
+		xp_reward=50,
+	)
+	complete_all(user, quests)
+
+	result = QuestService.complete_quest(one_time.id, user)
+
+	# 75 quest XP and the 25 bonus leave 10.
+	assert result['xp_gained'] == 10
+
+
+@pytest.mark.django_db
+@override_settings(QUESTIFY_XP_24H_CAP=125)
+def test_bonus_the_cap_left_no_room_for_waits_for_a_later_daily_completion(user):
+	earlier = QuestCompletion.objects.create(
+		user=user,
+		status=QuestCompletion.CompletionStatus.COMPLETED,
+		completed_at=timezone.now() - timedelta(hours=23),
+		xp_awarded=50,
+	)
+	one_time = Quest.objects.create(
+		user=user,
+		title='One-time',
+		quest_type=Quest.QuestType.ONE_TIME,
+		xp_reward=10,
+	)
+
+	results = complete_all(user, make_bonus_quests(user, 3))
+	assert results[-1]['daily_bonus'] is None
+	assert not DailyBonus.objects.exists()
+
+	# The earlier XP leaves the 24-hour window.
+	QuestCompletion.objects.filter(pk=earlier.pk).update(
+		completed_at=timezone.now() - timedelta(hours=25),
+	)
+	one_time_result = QuestService.complete_quest(one_time.id, user)
+	added_later = Quest.objects.create(
+		user=user,
+		title='Added later',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+	)
+	late_result = QuestService.complete_quest(added_later.id, user)
+
+	# A one-time completion never finishes the day, even with room left.
+	assert one_time_result['daily_bonus'] is None
+	# 75 + 10 + 25 of 125 leaves 15.
+	assert late_result['daily_bonus'] == {'xp': 15, 'coins': 15}
+	assert DailyBonus.objects.get(user=user).quest_completion == (
+		QuestCompletion.objects.get(quest=added_later)
+	)
+
+
+@pytest.mark.django_db
+def test_completion_paying_the_daily_bonus_takes_no_extra_character_locks(user):
+	from django.db import connection
+	from django.test.utils import CaptureQueriesContext
+
+	*earlier, last = make_bonus_quests(user, 3)
+	complete_all(user, earlier)
+
+	with CaptureQueriesContext(connection) as queries:
+		result = QuestService.complete_quest(last.id, user)
+
+	assert result['daily_bonus'] is not None
+	character_locks = [
+		query['sql']
+		for query in queries
+		if 'FROM "core_character"' in query['sql'] and 'FOR UPDATE' in query['sql']
+	]
+	assert len(character_locks) == 3
+
+
+@pytest.mark.django_db
+def test_daily_bonus_status_reports_progress_in_the_users_timezone(api_client, user):
+	Character.objects.filter(user=user).update(timezone='Pacific/Kiritimati')
+	first, *others = make_bonus_quests(user, 3)
+	api_client.force_authenticate(user=user)
+
+	QuestService.complete_quest(first.id, user)
+	before = api_client.get('/api/quests/daily-bonus/')
+	complete_all(user, others)
+	after = api_client.get('/api/quests/daily-bonus/')
+
+	local_today = timezone.localdate(timezone=ZoneInfo('Pacific/Kiritimati'))
+	assert before.status_code == 200
+	assert before.data == {
+		'date': local_today.isoformat(),
+		'required': 3,
+		'completed': 1,
+		'total': 3,
+		'awarded': False,
+		'xp': 25,
+	}
+	assert after.data == {
+		'date': local_today.isoformat(),
+		'required': 3,
+		'completed': 3,
+		'total': 3,
+		'awarded': True,
+		'xp': 25,
+	}
+
+
+def test_daily_bonus_status_is_documented_as_one_object():
+	from drf_spectacular.generators import SchemaGenerator
+
+	operation = SchemaGenerator().get_schema(public=True)['paths'][
+		'/api/quests/daily-bonus/'
+	]['get']
+
+	assert operation['responses']['200']['content']['application/json'][
+		'schema'
+	] == {'$ref': '#/components/schemas/DailyBonusStatus'}
+
+
+def test_admin_shows_daily_bonuses_read_only():
+	bonus_admin = DailyBonusAdmin(DailyBonus, django_admin.site)
+
+	assert bonus_admin.has_add_permission(None) is False
+	assert bonus_admin.has_change_permission(None) is False
+	assert bonus_admin.has_delete_permission(None) is False

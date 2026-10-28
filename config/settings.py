@@ -235,6 +235,12 @@ QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H = int(
 	os.getenv('QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H', '100'),
 )
 QUESTIFY_MAX_DESCRIPTION_LENGTH = 10_000
+# Bonus XP (and as many coins) for completing every active daily and habit
+# quest of a local day, if there are at least the minimum number of them.
+QUESTIFY_DAILY_BONUS_XP = int(os.getenv('QUESTIFY_DAILY_BONUS_XP', '25'))
+QUESTIFY_DAILY_BONUS_MIN_QUESTS = int(
+	os.getenv('QUESTIFY_DAILY_BONUS_MIN_QUESTS', '3'),
+)
 
 # Requests are small JSON documents (the largest field is a 10,000-character
 # description); cap the body well below Django's 2.5 MB default.
@@ -261,6 +267,12 @@ if QUESTIFY_MAX_REWARDS_PER_USER <= 0:
 if QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H <= 0:
 	raise ImproperlyConfigured(
 		'QUESTIFY_MAX_REDEMPTIONS_PER_USER_PER_24H must be positive.'
+	)
+if QUESTIFY_DAILY_BONUS_XP <= 0:
+	raise ImproperlyConfigured('QUESTIFY_DAILY_BONUS_XP must be positive.')
+if QUESTIFY_DAILY_BONUS_MIN_QUESTS <= 0:
+	raise ImproperlyConfigured(
+		'QUESTIFY_DAILY_BONUS_MIN_QUESTS must be positive.'
 	)
 
 SPECTACULAR_SETTINGS = {

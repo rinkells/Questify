@@ -27,7 +27,29 @@ class WalletService:
     # aborts the whole completion anyway.
     @transaction.atomic(savepoint=False)
     def credit_quest_reward(user_id, amount, completion_id=None):
-        """Add a completion's coins and record them; returns the new balance.
+        """Add a completion's coins and record them; returns the new balance."""
+        return WalletService._credit(
+            user_id,
+            amount,
+            WalletTransaction.Kind.QUEST_REWARD,
+            quest_completion_id=completion_id,
+        )
+
+    @staticmethod
+    # No savepoint, as for credit_quest_reward: it runs inside complete_quest.
+    @transaction.atomic(savepoint=False)
+    def credit_daily_bonus(user_id, amount, daily_bonus_id=None):
+        """Add a daily bonus's coins and record them; returns the new balance."""
+        return WalletService._credit(
+            user_id,
+            amount,
+            WalletTransaction.Kind.DAILY_BONUS,
+            daily_bonus_id=daily_bonus_id,
+        )
+
+    @staticmethod
+    def _credit(user_id, amount, kind, **links):
+        """Add coins and write their transaction; returns the new balance.
 
         The UPDATE locks the character row (complete_quest already holds it),
         so the balance read back is this transaction's own and cannot change
@@ -44,10 +66,10 @@ class WalletService:
         ).get()
         WalletTransaction.objects.create(
             user_id=user_id,
-            kind=WalletTransaction.Kind.QUEST_REWARD,
+            kind=kind,
             amount=amount,
             balance_after=balance,
-            quest_completion_id=completion_id,
+            **links,
         )
         return balance
 

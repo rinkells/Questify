@@ -18,6 +18,7 @@ from core.serializers import DetailSerializer
 from .models import Quest, QuestCategory, QuestCompletion
 from .permissions import IsOwner
 from .serializers import (
+	DailyBonusStatusSerializer,
 	QuestCategorySerializer,
 	QuestCompleteResponseSerializer,
 	QuestFailResponseSerializer,
@@ -216,6 +217,12 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			QuestFailResponseSerializer(completion).data,
 			status=status.HTTP_201_CREATED,
 		)
+
+	@extend_schema(responses={200: DailyBonusStatusSerializer})
+	@action(detail=False, methods=('get',), url_path='daily-bonus')
+	def daily_bonus(self, request):
+		bonus_status = QuestService.daily_bonus_status(request.user)
+		return Response(DailyBonusStatusSerializer(bonus_status).data)
 
 
 class QuestCategoryViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):

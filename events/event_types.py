@@ -11,8 +11,17 @@ class EventResult:
     stats_updated: dict[str, int] = field(default_factory=dict)
     achievements_unlocked: list[int] = field(default_factory=list)
     streak_length: int = 0
+    # The daily bonus, kept apart from the quest's own xp_gained/coins_gained.
+    bonus_xp_gained: int = 0
+    bonus_coins_gained: int = 0
 
     def as_dict(self):
+        daily_bonus = None
+        if self.bonus_xp_gained or self.bonus_coins_gained:
+            daily_bonus = {
+                'xp': self.bonus_xp_gained,
+                'coins': self.bonus_coins_gained,
+            }
         return {
             'xp_gained': self.xp_gained,
             'coins_gained': self.coins_gained,
@@ -21,6 +30,7 @@ class EventResult:
             'stats_updated': self.stats_updated,
             'achievements_unlocked': self.achievements_unlocked,
             'streak_length': self.streak_length,
+            'daily_bonus': daily_bonus,
         }
 
 
@@ -38,6 +48,10 @@ class QuestCompletedEvent(Event):
     xp_awarded: int | None = None
     # The QuestCompletion row, so a handler can tie what it writes to it.
     completion_id: int | None = None
+    # XP of the daily bonus this completion earned (already capped), paid
+    # with the quest's XP, and its quests.DailyBonus row.
+    bonus_xp: int = 0
+    daily_bonus_id: int | None = None
 
 
 @dataclass(frozen=True)
