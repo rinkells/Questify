@@ -24,7 +24,6 @@ db.sqlite3
 htmlcov/
 staticfiles/
 media/
-skills/
 # Not needed inside the image
 README.md
 CLAUDE.md

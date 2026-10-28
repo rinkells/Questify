@@ -1,21 +1,35 @@
-from unittest.mock import Mock
+import importlib
+from unittest.mock import Mock, patch
 
 import pytest
+from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
+from django.db import IntegrityError, connection, transaction
+from django.db.migrations.recorder import MigrationRecorder
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from events.dispatcher import dispatcher
-from events.event_types import AchievementUnlockedEvent, QuestCompletedEvent
+from events.event_types import (
+    AchievementUnlockedEvent,
+    QuestCompletedEvent,
+    SkillUnlockedEvent,
+)
+from quests import selectors
 from quests.models import Quest, QuestCategory, QuestCompletion, Streak
 from quests.services import QuestService
 
+from .checks import check_achievement_configs
 from .conditions import (
+    AchievementEvaluationContext,
     LevelReachedEvaluator,
     QuestCountByCategoryEvaluator,
     QuestCountEvaluator,
+    SkillsUnlockedCountEvaluator,
     StreakLengthEvaluator,
     TotalXPEvaluator,
+    _warn_once,
 )
 from .handlers import AchievementCheckHandler
 from .models import Achievement, UserAchievement
@@ -308,6 +322,8 @@ def test_achievement_serializer_uses_prefetched_unlock_state_without_n_plus_one(
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('config', [
+    {},
+    {'treshold': 3},
     {'threshold': 'ten'},
     {'threshold': -1},
     {'threshold': True},
@@ -374,3 +390,337 @@ def test_achievement_clean_rejects_malformed_config():
     with pytest.raises(ValidationError):
         bad.full_clean()
     good.full_clean()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('condition_type', Achievement.ConditionType.values)
+def test_achievement_clean_requires_a_threshold(condition_type):
+    from django.core.exceptions import ValidationError
+
+    with pytest.raises(ValidationError):
+        Achievement(
+            name='no threshold',
+            condition_type=condition_type,
+            condition_config={'category': 'study'},
+        ).full_clean()
+
+
+@pytest.mark.django_db
+def test_category_achievement_matches_case_insensitively(
+    achievement_user,
+    achievement_category,
+):
+    create_completed_quest(achievement_user, achievement_category)
+    config = {'category': 'Study', 'count': 1}
+    context = AchievementEvaluationContext(
+        completed_quests_by_category={'study': 1},
+    )
+
+    evaluator = QuestCountByCategoryEvaluator()
+    assert evaluator.evaluate(achievement_user, config)
+    assert evaluator.evaluate_with_context(achievement_user, config, context)
+
+
+@pytest.mark.django_db
+def test_skills_condition_counts_zero_without_the_skills_app(achievement_user):
+    evaluator = SkillsUnlockedCountEvaluator()
+    with patch('achievements.conditions.apps.is_installed', return_value=False):
+        assert evaluator.evaluate(achievement_user, {'threshold': 0})
+        assert not evaluator.evaluate(achievement_user, {'threshold': 1})
+
+
+@pytest.mark.django_db
+def test_uncategorized_achievement_ignores_legacy_unknown_categories(
+    achievement_user,
+):
+    create_completed_quest(achievement_user)
+    legacy = create_completed_quest(achievement_user)
+    QuestCompletion.objects.filter(quest=legacy).update(
+        category_name_at_completion=None,
+    )
+    config = {'threshold': 2}
+    context = AchievementEvaluationContext(
+        completed_quests_by_category=selectors.completed_counts_by_category(
+            achievement_user.id,
+        ),
+    )
+
+    evaluator = QuestCountByCategoryEvaluator()
+    assert not evaluator.evaluate(achievement_user, config)
+    assert not evaluator.evaluate_with_context(achievement_user, config, context)
+    assert evaluator.evaluate(achievement_user, {'threshold': 1})
+
+
+@pytest.mark.django_db
+def test_migration_keeps_achievements_without_threshold_earnable():
+    migration = importlib.import_module(
+        'achievements.migrations.0003_explicit_zero_threshold',
+    )
+    missing = Achievement.objects.create(
+        name='missing',
+        condition_type=Achievement.ConditionType.QUEST_COUNT_BY_CATEGORY,
+        condition_config={'category': 'study'},
+    )
+    empty = Achievement.objects.create(
+        name='empty',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config={},
+    )
+    with_count = Achievement.objects.create(
+        name='count',
+        condition_type=Achievement.ConditionType.QUEST_COUNT,
+        condition_config={'count': 3},
+    )
+    typo = Achievement.objects.create(
+        name='typo',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config={'treshold': 3},
+    )
+    misplaced = Achievement.objects.create(
+        name='misplaced',
+        condition_type=Achievement.ConditionType.LEVEL_REACHED,
+        condition_config={'count': 5},
+    )
+    malformed = Achievement.objects.create(
+        name='malformed',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config='oops',
+    )
+
+    migration.add_explicit_zero_threshold(django_apps, None)
+
+    for achievement in (missing, empty, with_count, typo, misplaced, malformed):
+        achievement.refresh_from_db()
+    assert missing.condition_config == {'category': 'study', 'threshold': 0}
+    assert empty.condition_config == {'threshold': 0}
+    # Left unattainable rather than granted to everyone.
+    assert with_count.condition_config == {'count': 3}
+    assert typo.condition_config == {'treshold': 3}
+    assert misplaced.condition_config == {'count': 5}
+    assert malformed.condition_config == 'oops'
+
+
+@pytest.mark.django_db
+def test_startup_check_reports_achievements_that_can_never_unlock():
+    Achievement.objects.create(
+        name='fine',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config={'threshold': 10},
+    )
+    typo = Achievement.objects.create(
+        name='typo',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config={'treshold': 10},
+    )
+    unknown = Achievement.objects.create(
+        name='unknown',
+        condition_type='removed_type',
+        condition_config={'threshold': 1},
+    )
+
+    warnings = check_achievement_configs(None, databases=['default'])
+
+    assert [warning.obj for warning in warnings] == [typo, unknown]
+    assert {warning.id for warning in warnings} == {'achievements.W001'}
+    assert check_achievement_configs(None) == []
+
+
+@pytest.mark.django_db
+def test_skill_unlock_checks_only_skill_achievements(achievement_user):
+    skills = Achievement.objects.create(
+        name='skills',
+        condition_type=Achievement.ConditionType.SKILLS_UNLOCKED_COUNT,
+        condition_config={'threshold': 0},
+    )
+    Achievement.objects.create(
+        name='quests',
+        condition_type=Achievement.ConditionType.QUEST_COUNT,
+        condition_config={'threshold': 0},
+    )
+
+    AchievementCheckHandler().handle(
+        SkillUnlockedEvent(user_id=achievement_user.id, skill_id=1),
+    )
+
+    assert list(
+        UserAchievement.objects.filter(user=achievement_user).values_list(
+            'achievement_id',
+            flat=True,
+        )
+    ) == [skills.id]
+
+
+@pytest.mark.django_db
+def test_category_achievement_ignores_surrounding_whitespace(
+    achievement_user,
+    achievement_category,
+):
+    create_completed_quest(achievement_user, achievement_category)
+    config = {'category': ' Study ', 'count': 1}
+    context = AchievementEvaluationContext(
+        completed_quests_by_category=selectors.completed_counts_by_category(
+            achievement_user.id,
+        ),
+    )
+
+    evaluator = QuestCountByCategoryEvaluator()
+    assert evaluator.evaluate(achievement_user, config)
+    assert evaluator.evaluate_with_context(achievement_user, config, context)
+
+
+@pytest.mark.django_db
+def test_startup_check_only_runs_for_the_achievements_app():
+    Achievement.objects.create(
+        name='typo',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config={'treshold': 1},
+    )
+
+    assert check_achievement_configs(
+        [django_apps.get_app_config('skills')],
+        databases=['default'],
+    ) == []
+    assert len(check_achievement_configs(
+        [django_apps.get_app_config('achievements')],
+        databases=['default'],
+    )) == 1
+
+
+@pytest.mark.django_db
+def test_quest_count_alone_uses_a_plain_count(achievement_user):
+    Achievement.objects.create(
+        name='count',
+        condition_type=Achievement.ConditionType.QUEST_COUNT,
+        condition_config={'threshold': 100},
+    )
+    event = QuestCompletedEvent(
+        quest_id=1,
+        user_id=achievement_user.id,
+        completed_at=timezone.now(),
+    )
+
+    with CaptureQueriesContext(connection) as queries:
+        AchievementCheckHandler().handle(event)
+
+    completion_sql = [
+        query['sql']
+        for query in queries
+        if 'quests_questcompletion' in query['sql']
+    ]
+    assert len(completion_sql) == 1
+    assert 'GROUP BY' not in completion_sql[0]
+    assert 'COUNT(' in completion_sql[0]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('category', [' ', [], 0, False])
+def test_blank_or_falsy_category_does_not_mean_uncategorized(
+    achievement_user,
+    category,
+):
+    from django.core.exceptions import ValidationError
+
+    create_completed_quest(achievement_user)
+    config = {'category': category, 'threshold': 1}
+    achievement = Achievement.objects.create(
+        name='bad category',
+        condition_type=Achievement.ConditionType.QUEST_COUNT_BY_CATEGORY,
+        condition_config=config,
+    )
+    context = AchievementEvaluationContext(
+        completed_quests_by_category=selectors.completed_counts_by_category(
+            achievement_user.id,
+        ),
+    )
+
+    evaluator = QuestCountByCategoryEvaluator()
+    assert not evaluator.evaluate(achievement_user, config)
+    assert not evaluator.evaluate_with_context(achievement_user, config, context)
+    with pytest.raises(ValidationError):
+        achievement.full_clean()
+    assert [
+        warning.obj
+        for warning in check_achievement_configs(None, databases=['default'])
+    ] == [achievement]
+    # A missing, null or empty category means uncategorized quests.
+    assert evaluator.evaluate(achievement_user, {'threshold': 1})
+    assert evaluator.evaluate(achievement_user, {'category': None, 'threshold': 1})
+    assert evaluator.evaluate(achievement_user, {'category': '', 'threshold': 1})
+
+
+@pytest.mark.django_db
+def test_startup_check_reads_configs_as_the_evaluators_do(achievement_user):
+    from django.core.exceptions import ValidationError
+
+    create_completed_quest(achievement_user)
+    second_key_bad = Achievement.objects.create(
+        name='second key bad',
+        condition_type=Achievement.ConditionType.QUEST_COUNT,
+        condition_config={'threshold': 1, 'count': 'x'},
+    )
+    unknown = Achievement.objects.create(
+        name='unknown',
+        condition_type='removed_type',
+        condition_config={'threshold': 1},
+    )
+
+    warnings = check_achievement_configs(None, databases=['default'])
+
+    # The admin refuses the bad second key, but only the first one is read.
+    with pytest.raises(ValidationError):
+        second_key_bad.full_clean()
+    assert QuestCountEvaluator().evaluate(
+        achievement_user,
+        second_key_bad.condition_config,
+    )
+    assert [warning.obj for warning in warnings] == [unknown]
+    assert 'condition_type' in warnings[0].hint
+    assert 'condition_config' not in warnings[0].hint
+
+
+@pytest.mark.django_db
+def test_startup_check_waits_for_pending_achievement_migrations():
+    Achievement.objects.create(
+        name='fixed by 0003',
+        condition_type=Achievement.ConditionType.TOTAL_XP,
+        condition_config={},
+    )
+    assert len(check_achievement_configs(None, databases=['default'])) == 1
+
+    # As when migrate runs its checks before applying 0003 and the
+    # migrations after it; the test's transaction rolls the records back.
+    recorder = MigrationRecorder(connection)
+    for name in (
+        '0003_explicit_zero_threshold',
+        '0004_achievement_condition_config_no_default',
+    ):
+        recorder.record_unapplied('achievements', name)
+
+    assert check_achievement_configs(None, databases=['default']) == []
+
+
+@pytest.mark.django_db
+def test_unusable_config_is_logged_once(achievement_user, caplog):
+    # The cache is per process, so an earlier evaluation of the same config
+    # (another test, or a rerun of this one) would have used up the warning.
+    _warn_once.cache_clear()
+    config = {'threshold': 'logged once'}
+    evaluator = TotalXPEvaluator()
+
+    with caplog.at_level('WARNING', logger='achievements.conditions'):
+        for _ in range(3):
+            assert not evaluator.evaluate(achievement_user, config)
+
+    assert len(caplog.records) == 1
+    assert 'logged once' in caplog.records[0].getMessage()
+
+
+@pytest.mark.django_db
+def test_achievement_without_condition_config_is_refused():
+    # With the old default of {} this created an achievement that could
+    # never unlock, reported only by a startup warning.
+    with pytest.raises(IntegrityError), transaction.atomic():
+        Achievement.objects.create(
+            name='Welcome',
+            condition_type=Achievement.ConditionType.QUEST_COUNT,
+        )

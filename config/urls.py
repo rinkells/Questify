@@ -25,6 +25,7 @@ from core.views import CharacterView
 from core.auth_views import RegisterView, TokenLoginView, TokenLogoutView
 from achievements.views import AchievementListView, UnlockedAchievementListView
 from quests.views import QuestCategoryViewSet, QuestViewSet
+from skills.views import SkillTreeView, SkillUnlockView
 
 
 router = DefaultRouter()
@@ -48,6 +49,12 @@ urlpatterns = [
         'api/achievements/unlocked/',
         UnlockedAchievementListView.as_view(),
         name='achievement-unlocked-list',
+    ),
+    path('api/skills/tree/', SkillTreeView.as_view(), name='skill-tree'),
+    path(
+        'api/skills/<int:skill_id>/unlock/',
+        SkillUnlockView.as_view(),
+        name='skill-unlock',
     ),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(
