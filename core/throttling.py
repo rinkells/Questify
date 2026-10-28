@@ -1,5 +1,7 @@
 import hashlib
 import logging
+import time
+from ipaddress import ip_address, ip_network
 
 from redis.exceptions import RedisError
 from rest_framework.throttling import (
@@ -12,6 +14,28 @@ from rest_framework.throttling import (
 
 logger = logging.getLogger(__name__)
 
+# An IPv6 client is usually given a whole /64, so keying on the full address
+# would let one host rotate through billions of fresh budgets.
+IPV6_CLIENT_PREFIX = 64
+
+
+def client_network(ident):
+	"""Return the throttle identity for a client address.
+
+	IPv4 addresses (including IPv4-mapped IPv6) stay as they are; IPv6
+	addresses become their /64. Anything that does not parse is returned
+	unchanged. Only for counting: allow-lists must use the real address.
+	"""
+	try:
+		address = ip_address(ident)
+	except ValueError:
+		return ident
+	if address.version == 6:
+		if address.ipv4_mapped is not None:
+			return str(address.ipv4_mapped)
+		return str(ip_network(f'{address}/{IPV6_CLIENT_PREFIX}', strict=False))
+	return str(address)
+
 
 class AtomicThrottleMixin:
 	"""Use atomic cache add/incr counters instead of DRF's history list."""
@@ -20,22 +44,25 @@ class AtomicThrottleMixin:
 	# through (the API stays up) while brute-force-sensitive scopes deny them.
 	fail_open = True
 
-	def _increment(self, key):
+	def get_ident(self, request):
+		return client_network(super().get_ident(request))
+
+	def _increment(self, key, timeout=None):
 		try:
-			return self._increment_counter(key)
+			return self._increment_counter(key, timeout or self.duration)
 		except RedisError:
 			logger.exception('Throttle cache unavailable for %s', type(self).__name__)
-			return 0 if self.fail_open else self.num_requests + 1
+			return 0 if self.fail_open else float('inf')
 
-	def _increment_counter(self, key):
-		if self.cache.add(key, 1, timeout=self.duration):
+	def _increment_counter(self, key, timeout):
+		if self.cache.add(key, 1, timeout=timeout):
 			return 1
 
 		try:
 			return self.cache.incr(key)
 		except ValueError:
 			# The key may have expired between add() and incr(). Recreate it.
-			if self.cache.add(key, 1, timeout=self.duration):
+			if self.cache.add(key, 1, timeout=timeout):
 				return 1
 			return self.cache.incr(key)
 
@@ -127,7 +154,46 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 			account_key = self._key(f'account:{client_ip}:{username_digest}')
 			if self._increment(account_key) > self.num_requests:
 				self._blocked_keys.append(account_key)
+			else:
+				self._check_account_networks(username_digest, client_ip)
 		return not self._blocked_keys
+
+	def _check_account_networks(self, username_digest, client_ip):
+		"""Bound how many networks may try one account's password per window.
+
+		The account counter above is per client network, so a third party
+		cannot lock the owner out from one address; but alone it lets a
+		botnet guess without limit. This ceiling (the 'login_networks' rate)
+		counts the distinct networks trying the account in a fixed window.
+		Networks already counted keep their own budget; a new one beyond the
+		ceiling is refused until the window ends. Locking the owner out of a
+		new network therefore takes as many networks as the ceiling.
+		"""
+		rate = self.THROTTLE_RATES.get('login_networks')
+		if rate is None:
+			return
+		max_networks, window = self.parse_rate(rate)
+		# Both keys carry the window number, so a network seen in one window
+		# is counted again in the next and the markers expire with it.
+		window_id = int(time.time() // window)
+		count_key = self._key(f'account-networks:{window_id}:{username_digest}')
+		marker_key = self._key(
+			f'account-network:{window_id}:{username_digest}:{client_ip}',
+		)
+		try:
+			if not self.cache.add(marker_key, 1, timeout=window):
+				return
+		except RedisError:
+			logger.exception('Throttle cache unavailable for login networks')
+			self._blocked_keys.append(count_key)
+			return
+		if self._increment(count_key, timeout=window) > max_networks:
+			# Not counted after all, so the network stays refused.
+			try:
+				self.cache.delete(marker_key)
+			except RedisError:
+				logger.exception('Throttle cache unavailable for login networks')
+			self._blocked_keys.append(count_key)
 
 	def _key(self, identifier):
 		return self.cache_format % {'scope': self.scope, 'ident': identifier}

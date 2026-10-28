@@ -48,7 +48,10 @@ class ExpiringTokenAuthentication(TokenAuthentication):
 			# Same message as an unknown token, so a stale token reveals nothing.
 			raise AuthenticationFailed('Invalid token.')
 		if not token.user.is_active:
-			raise AuthenticationFailed('User inactive or deleted.')
+			# Same answer as an unknown token, so a token reveals nothing
+			# about the account's state; reactivation needs a new login.
+			token.delete()
+			raise AuthenticationFailed('Invalid token.')
 		# A password change or reset must cut off tokens issued before it.
 		if not constant_time_compare(
 			token.auth_hash,
