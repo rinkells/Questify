@@ -16,6 +16,8 @@ class QuestSerializer(serializers.ModelSerializer):
         queryset=QuestCategory.objects.none(),
         required=False,
         allow_null=True,
+        # Without it the lookup gets the raw value: 1.5 silently means pk 1.
+        pk_field=serializers.IntegerField(),
     )
     description = serializers.CharField(
         required=False,

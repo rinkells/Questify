@@ -1,5 +1,7 @@
 import logging
 
+from django.db.models import F
+
 from core.models import Character, Stat
 from quests.models import Quest, QuestStatReward
 from quests.services import StreakService
@@ -15,13 +17,15 @@ class XPRewardHandler:
     def handle(self, event: Event):
         if not isinstance(event, QuestCompletedEvent):
             return
-        quest = Quest.objects.get(pk=event.quest_id)
-        character = Character.objects.select_for_update().get(user_id=event.user_id)
-        xp_awarded = (
-            quest.xp_reward if event.xp_awarded is None else event.xp_awarded
+        xp_awarded = event.xp_awarded
+        if xp_awarded is None:
+            xp_awarded = Quest.objects.get(pk=event.quest_id).xp_reward
+        # The UPDATE locks the row itself; reading it first is not needed.
+        updated = Character.objects.filter(user_id=event.user_id).update(
+            xp=F('xp') + xp_awarded,
         )
-        character.xp += xp_awarded
-        character.save(update_fields=('xp',))
+        if not updated:
+            raise Character.DoesNotExist(f'No character for user {event.user_id}')
         if event.result is not None:
             event.result.xp_gained = xp_awarded
 
@@ -30,7 +34,6 @@ class StatUpdateHandler:
     def handle(self, event: Event):
         if not isinstance(event, QuestCompletedEvent):
             return
-        character = Character.objects.select_for_update().get(user_id=event.user_id)
         rewards = list(
             QuestStatReward.objects.filter(quest_id=event.quest_id)
             .select_related('stat_type')
@@ -38,6 +41,7 @@ class StatUpdateHandler:
         )
         if not rewards:
             return
+        character = Character.objects.select_for_update().get(user_id=event.user_id)
 
         # A constant number of queries however many rewards the quest has.
         # The character row is locked, so no one else can create these stats.
