@@ -1,19 +1,8 @@
 from django.contrib import admin
 
+from core.admin import ReadOnlyAdminMixin
+
 from .models import Reward, RewardRedemption, WalletTransaction
-
-
-class ReadOnlyAdmin(admin.ModelAdmin):
-    """History rows: written only together with the balance they explain."""
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
 
 
 @admin.register(Reward)
@@ -47,7 +36,7 @@ class RewardAdmin(admin.ModelAdmin):
 
 
 @admin.register(RewardRedemption)
-class RewardRedemptionAdmin(ReadOnlyAdmin):
+class RewardRedemptionAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     readonly_fields = (
         'user',
         'reward',
@@ -60,7 +49,7 @@ class RewardRedemptionAdmin(ReadOnlyAdmin):
 
 
 @admin.register(WalletTransaction)
-class WalletTransactionAdmin(ReadOnlyAdmin):
+class WalletTransactionAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     readonly_fields = (
         'user',
         'kind',
@@ -69,6 +58,7 @@ class WalletTransactionAdmin(ReadOnlyAdmin):
         'quest_completion',
         'redemption',
         'daily_bonus',
+        'boss_defeat',
         'created_at',
     )
     list_display = ('user', 'kind', 'amount', 'balance_after', 'created_at')

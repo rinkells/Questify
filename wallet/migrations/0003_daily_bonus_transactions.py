@@ -11,8 +11,10 @@ def refuse_to_drop_paid_bonuses(apps, schema_editor):
     coins and their daily_bonus transactions stay. Nothing would then record
     which local dates were paid, so migrating forward again would let the
     same date pay a second bonus, and the 24-hour XP cap would stop counting
-    the bonus XP. This is the last operation, so it runs first when
-    reverting and the rollback stops before anything changes.
+    the bonus XP. It is listed in rollback_guards, so it runs before any
+    step of a rollback that reverts this migration (core.rollback_guards),
+    and it is the last operation, so the migration's own reversal starts
+    with it as well.
     """
     DailyBonus = apps.get_model('quests', 'DailyBonus')
     paid = DailyBonus.objects.using(schema_editor.connection.alias).count()
@@ -29,6 +31,8 @@ def refuse_to_drop_paid_bonuses(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+
+    rollback_guards = (refuse_to_drop_paid_bonuses,)
 
     dependencies = [
         ('quests', '0015_daily_bonus'),

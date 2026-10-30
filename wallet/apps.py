@@ -6,10 +6,11 @@ class WalletConfig(AppConfig):
 
     def ready(self):
         from events.dispatcher import dispatcher
-        from events.event_types import QuestCompletedEvent
+        from events.event_types import BossDefeatedEvent, QuestCompletedEvent
 
-        from .handlers import QuestRewardCoinsHandler
+        from .handlers import BossRewardCoinsHandler, QuestRewardCoinsHandler
 
         # Registered after the events app's handlers and before the
         # achievement check (see INSTALLED_APPS).
         dispatcher.register(QuestCompletedEvent, QuestRewardCoinsHandler().handle)
+        dispatcher.register(BossDefeatedEvent, BossRewardCoinsHandler().handle)

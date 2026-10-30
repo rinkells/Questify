@@ -127,6 +127,7 @@ class AchievementEvaluationContext:
     completed_quests_by_category: dict[str, int] | None = None
     longest_streak: int | None = None
     skills_unlocked_count: int | None = None
+    bosses_defeated_count: int | None = None
 
 
 class ConditionEvaluator(ABC):
@@ -239,6 +240,32 @@ class SkillsUnlockedCountEvaluator(ConditionEvaluator):
         )
 
 
+def bosses_defeated_count(user):
+    """Return how many bosses the user has defeated.
+
+    Through the reverse relation from bosses.BossDefeat, as for skills, so
+    this module does not import the bosses app. Unlike skills, bosses is
+    always installed: wallet's models import it, so the project cannot
+    start without it.
+    """
+    return user.boss_defeats.count()
+
+
+class BossesDefeatedCountEvaluator(ConditionEvaluator):
+    def evaluate(self, user, config):
+        threshold = _threshold(config, 'threshold')
+        return threshold is not None and bosses_defeated_count(user) >= threshold
+
+    def evaluate_with_context(self, user, config, context):
+        if context.bosses_defeated_count is None:
+            return self.evaluate(user, config)
+        threshold = _threshold(config, 'threshold')
+        return (
+            threshold is not None
+            and context.bosses_defeated_count >= threshold
+        )
+
+
 EVALUATOR_REGISTRY = {
     'total_xp': TotalXPEvaluator(),
     'quest_count': QuestCountEvaluator(),
@@ -246,4 +273,5 @@ EVALUATOR_REGISTRY = {
     'streak_length': StreakLengthEvaluator(),
     'level_reached': LevelReachedEvaluator(),
     'skills_unlocked_count': SkillsUnlockedCountEvaluator(),
+    'bosses_defeated_count': BossesDefeatedCountEvaluator(),
 }

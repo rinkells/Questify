@@ -2,18 +2,23 @@ from datetime import timedelta
 import hashlib
 import io
 from ipaddress import ip_network
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache, caches
-from django.db import IntegrityError
+from django.db import IntegrityError, migrations
+from django.db.migrations.loader import MigrationLoader
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from redis.exceptions import RedisError
 from rest_framework.test import APIClient
 
 from .models import HashedAPIToken, Stat, StatType
+from .rollback_guards import refuse_unsafe_rollbacks
 from .throttling import AtomicUserRateThrottle
 
 
@@ -930,3 +935,69 @@ class SecurityAuditFixTests(TestCase):
 
 		self.assertEqual(response.status_code, 429)
 		self.assertTrue(any('account-network:' in key for key in calls))
+
+
+class RollbackGuardTests(TestCase):
+	def test_guards_of_reverted_migrations_run_first_in_plan_order(self):
+		calls = []
+
+		def guard(name):
+			return lambda state, schema_editor: calls.append((name, state))
+
+		plan = [
+			(SimpleNamespace(rollback_guards=(guard('applied'),)), False),
+			(SimpleNamespace(rollback_guards=(guard('first'), guard('second'))), True),
+			(SimpleNamespace(), True),
+			(SimpleNamespace(rollback_guards=(guard('third'),)), True),
+		]
+
+		refuse_unsafe_rollbacks(None, plan=plan, apps='state', using='default')
+
+		self.assertEqual(calls, [
+			('first', 'state'),
+			('second', 'state'),
+			('third', 'state'),
+		])
+
+	def test_a_refusal_stops_before_the_later_guards(self):
+		def refuse(state, schema_editor):
+			raise RuntimeError('refused')
+
+		later = []
+		plan = [
+			(SimpleNamespace(rollback_guards=(refuse,)), True),
+			(SimpleNamespace(rollback_guards=(lambda *args: later.append(args),)), True),
+		]
+
+		with self.assertRaisesMessage(RuntimeError, 'refused'):
+			refuse_unsafe_rollbacks(None, plan=plan, apps=None, using='default')
+		self.assertEqual(later, [])
+
+	def test_every_reverse_only_guard_is_listed_in_rollback_guards(self):
+		# A guard missing from the list would run only at its own step, after
+		# the migrations reverted before it had committed.
+		# Only this project's apps: Django's own reverse-only RunPython
+		# operations change data.
+		project_apps = {
+			config.label
+			for config in apps.get_app_configs()
+			if Path(config.path).parent == settings.BASE_DIR
+		}
+		loader = MigrationLoader(None, ignore_no_migrations=True)
+		checked = []
+		for key, migration in loader.disk_migrations.items():
+			if key[0] not in project_apps:
+				continue
+			for operation in migration.operations:
+				if not isinstance(operation, migrations.RunPython):
+					continue
+				if operation.code is not migrations.RunPython.noop:
+					continue
+				checked.append(key)
+				self.assertIn(
+					operation.reverse_code,
+					getattr(migration, 'rollback_guards', ()),
+					f'{key} has a rollback guard missing from rollback_guards',
+				)
+		self.assertIn(('wallet', '0003_daily_bonus_transactions'), checked)
+		self.assertIn(('wallet', '0004_boss_reward_transactions'), checked)

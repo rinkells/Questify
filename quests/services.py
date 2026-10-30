@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Q, Sum
+from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
 from core.models import Character
@@ -13,13 +13,13 @@ from events.dispatcher import dispatcher
 from events.event_types import EventResult, QuestCompletedEvent
 
 from .models import (
-	MAX_XP_REWARD,
 	DailyBonus,
 	Quest,
 	QuestCategory,
 	QuestCompletion,
 	Streak,
 )
+from .xp_cap import xp_left_in_24h
 
 
 DAILY_BONUS_QUEST_TYPES = (Quest.QuestType.DAILY, Quest.QuestType.HABIT)
@@ -31,11 +31,6 @@ class QuestAlreadyCompletedError(ValueError):
 
 class QuestAlreadyFailedError(ValueError):
     pass
-
-
-def get_xp_24h_cap():
-    # Read at call time so the cap follows the active settings.
-    return getattr(settings, 'QUESTIFY_XP_24H_CAP', 1_000)
 
 
 def local_day(now, timezone_name):
@@ -181,25 +176,9 @@ class QuestService:
                 raise QuestAlreadyCompletedError(
                     f'Quest {quest_id} has already been completed.'
                 )
-        recent_completions = QuestCompletion.objects.filter(
-            user=user,
-            status=QuestCompletion.CompletionStatus.COMPLETED,
-            completed_at__gte=now - timedelta(hours=24),
-        )
-        xp_earned_in_24h = (
-            recent_completions.filter(
-                xp_awarded_is_estimate=False,
-            ).aggregate(total=Sum('xp_awarded'))['total'] or 0
-        )
-        xp_earned_in_24h += (
-            recent_completions.filter(xp_awarded_is_estimate=True).count()
-            * MAX_XP_REWARD
-        )
-        xp_earned_in_24h += DailyBonus.objects.filter(
-            user=user,
-            awarded_at__gte=now - timedelta(hours=24),
-        ).aggregate(total=Sum('xp_awarded'))['total'] or 0
-        xp_left = max(0, get_xp_24h_cap() - xp_earned_in_24h)
+        # Every registered source: completions and daily bonuses. Boss
+        # rewards register none on purpose; they are outside the cap.
+        xp_left = xp_left_in_24h(user.id, now)
         xp_awarded = min(quest.xp_reward, xp_left)
         if xp_awarded <= 0:
             raise ValidationError('The XP limit for the last 24 hours has been reached.')
@@ -234,6 +213,7 @@ class QuestService:
                 result=result,
                 xp_awarded=xp_awarded,
                 completion_id=completion.id,
+                is_one_time=completion.is_one_time,
                 bonus_xp=daily_bonus.xp_awarded if daily_bonus else 0,
                 daily_bonus_id=daily_bonus.id if daily_bonus else None,
             )

@@ -7,6 +7,7 @@ import pytest
 from django.apps import apps
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import DataError, IntegrityError, connection, migrations, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.db.migrations.recorder import MigrationRecorder
@@ -15,10 +16,12 @@ from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from bosses.models import Boss, BossDefeat, BossStep
 from core.admin import CharacterAdmin
 from core.models import Character
 from events.dispatcher import dispatcher
 from quests.models import DailyBonus, Quest, QuestCompletion
+from quests.services import QuestService
 
 from .admin import RewardAdmin
 from .models import MAX_REWARD_COST, Reward, RewardRedemption, WalletTransaction
@@ -29,6 +32,9 @@ User = get_user_model()
 initial_balances = importlib.import_module('wallet.migrations.0002_initial_balances')
 daily_bonus_transactions = importlib.import_module(
     'wallet.migrations.0003_daily_bonus_transactions',
+)
+boss_reward_transactions = importlib.import_module(
+    'wallet.migrations.0004_boss_reward_transactions',
 )
 
 
@@ -634,12 +640,14 @@ def test_a_used_wallet_cannot_be_reverted(api_client, user, use_wallet):
 # --- Daily bonus rollback (wallet migration 0003) ----------------------------
 
 
-# Reverting to it unapplies wallet 0003, then quests 0015.
-BEFORE_DAILY_BONUS = [('quests', '0014_backfill_is_one_time')]
+# Reverting to it unapplies wallet 0004, wallet 0003, bosses 0001, then
+# quests 0015.
+BEFORE_DAILY_BONUS = ('quests', '0014_backfill_is_one_time')
 DAILY_BONUS_MIGRATIONS = {
     ('quests', '0015_daily_bonus'),
     ('wallet', '0003_daily_bonus_transactions'),
 }
+BOSS_REWARD_LINK = ('wallet', '0004_boss_reward_transactions')
 
 
 def applied_migrations():
@@ -650,9 +658,31 @@ def migrate_to(targets):
     MigrationExecutor(connection).migrate(targets)
 
 
+def migrate_command(target):
+    # What an operator runs. Unlike MigrationExecutor alone, the command
+    # sends pre_migrate with the whole plan, so the guards run first.
+    call_command('migrate', *target, verbosity=0)
+
+
 def migrate_to_latest():
     executor = MigrationExecutor(connection)
     executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+def wallet_transaction_columns():
+    with connection.cursor() as cursor:
+        return [
+            column.name
+            for column in connection.introspection.get_table_description(
+                cursor,
+                'wallet_wallettransaction',
+            )
+        ]
+
+
+def complete_a_one_time_quest(user):
+    quest = make_quest(user, 'After the refusal')
+    return QuestService.complete_quest(quest.id, user)
 
 
 def test_daily_bonus_guard_is_the_first_step_reverted():
@@ -670,8 +700,12 @@ def test_reverting_paid_daily_bonuses_stops_before_any_change(api_client, user):
 
     try:
         with pytest.raises(RuntimeError, match='already been paid') as refusal:
-            migrate_to(BEFORE_DAILY_BONUS)
+            migrate_command(BEFORE_DAILY_BONUS)
+        # Wallet 0004 too, although it is reverted before wallet 0003's
+        # guard is reached: the running code still needs its column.
         assert applied_migrations() == applied
+        assert 'boss_defeat_id' in wallet_transaction_columns()
+        assert complete_a_one_time_quest(user)['coins_gained'] == 50
     finally:
         # Leave the schema whole for the tests that follow, whatever happened.
         migrate_to_latest()
@@ -679,7 +713,7 @@ def test_reverting_paid_daily_bonuses_stops_before_any_change(api_client, user):
     assert 'second time' in str(refusal.value)
     assert DailyBonus.objects.get() == bonus
     assert WalletTransaction.objects.get(kind='daily_bonus').daily_bonus == bonus
-    assert coins(user) == Character.objects.get(user=user).xp == 100
+    assert coins(user) == Character.objects.get(user=user).xp == 150
     assert_ledger_matches(user)
 
 
@@ -688,12 +722,88 @@ def test_reverting_without_daily_bonuses_goes_through(user):
     give_coins(user, 50)
 
     try:
-        migrate_to(BEFORE_DAILY_BONUS)
+        migrate_command(BEFORE_DAILY_BONUS)
         assert not applied_migrations() & DAILY_BONUS_MIGRATIONS
         assert 'quests_dailybonus' not in connection.introspection.table_names()
     finally:
         migrate_to_latest()
 
     assert DAILY_BONUS_MIGRATIONS <= applied_migrations()
+    assert coins(user) == 50
+    assert_ledger_matches(user)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reverting_a_used_wallet_stops_before_any_change(user):
+    complete_a_one_time_quest(user)
+    applied = applied_migrations()
+
+    try:
+        with pytest.raises(RuntimeError, match='after it has been used'):
+            migrate_command(('wallet', '0001_initial'))
+        # 0004 and 0003 come before 0002's guard in the rollback.
+        assert applied_migrations() == applied
+        assert {'boss_defeat_id', 'daily_bonus_id'} <= set(wallet_transaction_columns())
+    finally:
+        migrate_to_latest()
+
+    assert coins(user) == 50
+    assert_ledger_matches(user)
+
+
+# Reverting to it unapplies wallet 0004 alone.
+BEFORE_BOSS_REWARDS = [('wallet', '0003_daily_bonus_transactions')]
+
+
+def defeat_boss(user):
+    boss = Boss.objects.create(user=user, title='Dragon')
+    for n in range(3):
+        quest = make_quest(user, f'Dragon step {n}')
+        BossStep.objects.create(boss=boss, quest=quest)
+        QuestService.complete_quest(quest.id, user)
+    return BossDefeat.objects.get(boss=boss)
+
+
+def test_boss_guard_is_the_first_step_reverted_in_wallet_0004():
+    # Operations are reverted last to first.
+    guard = boss_reward_transactions.Migration.operations[-1]
+
+    assert isinstance(guard, migrations.RunPython)
+    assert guard.reverse_code is boss_reward_transactions.refuse_to_unlink_boss_rewards
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reverting_paid_boss_rewards_stops_before_any_change(user):
+    defeat = defeat_boss(user)
+    paid = WalletTransaction.objects.get(kind='boss_reward')
+    applied = applied_migrations()
+    balance = (coins(user), Character.objects.get(user=user).xp)
+
+    try:
+        with pytest.raises(RuntimeError, match='already been paid') as refusal:
+            migrate_to(BEFORE_BOSS_REWARDS)
+        assert applied_migrations() == applied
+    finally:
+        migrate_to_latest()
+
+    assert 'which payment was for which boss' in str(refusal.value)
+    assert WalletTransaction.objects.get(kind='boss_reward') == paid
+    assert WalletTransaction.objects.get(pk=paid.pk).boss_defeat == defeat
+    assert (coins(user), Character.objects.get(user=user).xp) == balance
+    assert_ledger_matches(user)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reverting_without_boss_rewards_goes_through(user):
+    give_coins(user, 50)
+
+    try:
+        migrate_to(BEFORE_BOSS_REWARDS)
+        assert BOSS_REWARD_LINK not in applied_migrations()
+        assert 'boss_defeat_id' not in wallet_transaction_columns()
+    finally:
+        migrate_to_latest()
+
+    assert BOSS_REWARD_LINK in applied_migrations()
     assert coins(user) == 50
     assert_ledger_matches(user)

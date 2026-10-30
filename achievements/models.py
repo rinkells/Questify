@@ -13,6 +13,7 @@ class Achievement(models.Model):
         STREAK_LENGTH = 'streak_length', 'Streak length'
         LEVEL_REACHED = 'level_reached', 'Level reached'
         SKILLS_UNLOCKED_COUNT = 'skills_unlocked_count', 'Skills unlocked count'
+        BOSSES_DEFEATED_COUNT = 'bosses_defeated_count', 'Bosses defeated count'
 
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True, null=True)

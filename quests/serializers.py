@@ -70,6 +70,24 @@ class DailyBonusAwardSerializer(serializers.Serializer):
     coins = serializers.IntegerField()
 
 
+class BossDefeatAwardSerializer(serializers.Serializer):
+    # Paid in full: boss rewards are outside the 24-hour XP cap.
+    xp = serializers.IntegerField()
+    coins = serializers.IntegerField()
+
+
+class BossHitSerializer(serializers.Serializer):
+    """The boss whose step this completion was (bosses fills it in)."""
+
+    id = serializers.IntegerField()
+    title = serializers.CharField()
+    # Live steps still to complete after this completion, and in all.
+    hp = serializers.IntegerField()
+    max_hp = serializers.IntegerField()
+    # Set when this completion beat the boss.
+    defeated = BossDefeatAwardSerializer(allow_null=True)
+
+
 class QuestCompleteResponseSerializer(serializers.Serializer):
     # The quest's own reward; a daily bonus is reported in daily_bonus.
     xp_gained = serializers.IntegerField()
@@ -84,6 +102,9 @@ class QuestCompleteResponseSerializer(serializers.Serializer):
     streak_length = serializers.IntegerField()
     # Paid when this completion finished the day's daily and habit quests.
     daily_bonus = DailyBonusAwardSerializer(allow_null=True)
+    # Null unless the quest is a step of a boss; its reward is reported
+    # there, apart from xp_gained/coins_gained.
+    boss = BossHitSerializer(allow_null=True)
 
 
 class DailyBonusStatusSerializer(serializers.Serializer):

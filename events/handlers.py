@@ -7,7 +7,7 @@ from quests.models import Quest, QuestStatReward
 from quests.services import StreakService
 
 from .dispatcher import dispatcher
-from .event_types import Event, LevelUpEvent, QuestCompletedEvent
+from .event_types import BossDefeatedEvent, Event, LevelUpEvent, QuestCompletedEvent
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,25 @@ class XPRewardHandler:
         if event.result is not None:
             event.result.xp_gained = xp_awarded
             event.result.bonus_xp_gained = event.bonus_xp
+
+
+class BossRewardXPHandler:
+    """Add a boss reward's XP, which the completion's level check then sees.
+
+    BossDefeatedEvent is dispatched before the completion's XPRewardHandler
+    and LevelCheckHandler, so this handler needs no level check of its own.
+    """
+
+    def handle(self, event: Event):
+        if not isinstance(event, BossDefeatedEvent):
+            return
+        updated = Character.objects.filter(user_id=event.user_id).update(
+            xp=F('xp') + event.xp_awarded,
+        )
+        if not updated:
+            raise Character.DoesNotExist(f'No character for user {event.user_id}')
+        if event.result is not None and event.result.boss is not None:
+            event.result.boss.xp_gained = event.xp_awarded
 
 
 class StatUpdateHandler:

@@ -24,6 +24,7 @@ from config.health import healthz
 from core.views import CharacterView
 from core.auth_views import RegisterView, TokenLoginView, TokenLogoutView
 from achievements.views import AchievementListView, UnlockedAchievementListView
+from bosses.views import BossViewSet
 from quests.views import QuestCategoryViewSet, QuestViewSet
 from skills.views import SkillTreeView, SkillUnlockView
 from wallet.views import RewardViewSet, WalletTransactionListView
@@ -33,6 +34,7 @@ router = DefaultRouter()
 router.register('quests', QuestViewSet, basename='quest')
 router.register('quest-categories', QuestCategoryViewSet, basename='quest-category')
 router.register('rewards', RewardViewSet, basename='reward')
+router.register('bosses', BossViewSet, basename='boss')
 
 urlpatterns = [
 	path('healthz/', healthz, name='healthz'),

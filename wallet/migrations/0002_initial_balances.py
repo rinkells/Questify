@@ -53,20 +53,18 @@ def grant_initial_balances(apps, schema_editor):
     transactions.bulk_create(grants, batch_size=500)
 
 
-def revoke_initial_balances(apps, schema_editor):
-    """Take the grants back, but only while they are all the wallet did.
+def refuse_to_revoke_a_used_wallet(apps, schema_editor):
+    """Stop the rollback once the wallet did more than the grants.
 
     Reverting further drops the ledger (0001's reverse deletes the table)
     while Character.coins (core 0011) stays, so a later grant would pay the
     same XP again and nothing would explain the balance. Once quests paid
-    coins or rewards were redeemed, stop instead. With grants only, each
-    balance is exactly its grant, so subtracting it cannot go negative.
+    coins or rewards were redeemed, stop instead.
     """
-    Character = apps.get_model('core', 'Character')
     WalletTransaction = apps.get_model('wallet', 'WalletTransaction')
-    database = schema_editor.connection.alias
-    transactions = WalletTransaction.objects.using(database)
-    used = transactions.exclude(kind='initial_grant').count()
+    used = WalletTransaction.objects.using(
+        schema_editor.connection.alias,
+    ).exclude(kind='initial_grant').count()
     if used:
         raise RuntimeError(
             f'Cannot revert the wallet after it has been used ({used} '
@@ -74,7 +72,21 @@ def revoke_initial_balances(apps, schema_editor):
             'lost while Character.coins stays. Restore a backup taken before '
             'wallet migration 0002 instead.'
         )
-    grants = transactions.filter(kind='initial_grant')
+
+
+def revoke_initial_balances(apps, schema_editor):
+    """Take the grants back, but only while they are all the wallet did.
+
+    With grants only, each balance is exactly its grant, so subtracting it
+    cannot go negative.
+    """
+    refuse_to_revoke_a_used_wallet(apps, schema_editor)
+    Character = apps.get_model('core', 'Character')
+    WalletTransaction = apps.get_model('wallet', 'WalletTransaction')
+    database = schema_editor.connection.alias
+    grants = WalletTransaction.objects.using(database).filter(
+        kind='initial_grant',
+    )
     Character.objects.using(database).filter(
         user_id__in=grants.values('user_id'),
     ).update(
@@ -86,6 +98,10 @@ def revoke_initial_balances(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+
+    # Also run before a rollback starts (core.rollback_guards), so one that
+    # goes past this migration stops before the later ones are reverted.
+    rollback_guards = (refuse_to_revoke_a_used_wallet,)
 
     dependencies = [
         ('core', '0011_character_coins'),
