@@ -9,6 +9,23 @@ if admin.site.is_registered(TokenProxy):
 	admin.site.unregister(TokenProxy)
 
 
+class ReadOnlyAdminMixin:
+	"""View only, for a ModelAdmin or an inline.
+
+	For history rows, written only together with what they explain (a
+	balance, XP), so an admin edit would leave the two apart.
+	"""
+
+	def has_add_permission(self, request, obj=None):
+		return False
+
+	def has_change_permission(self, request, obj=None):
+		return False
+
+	def has_delete_permission(self, request, obj=None):
+		return False
+
+
 @admin.register(Character)
 class CharacterAdmin(admin.ModelAdmin):
 	list_display = ('user', 'level', 'xp', 'xp_to_next_level', 'coins', 'timezone')

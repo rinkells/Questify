@@ -142,6 +142,9 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'core.apps.CoreConfig',
     'quests.apps.QuestsConfig',
+    # Before events: its completion handler then runs ahead of XPRewardHandler
+    # and LevelCheckHandler, so the completion's level check sees boss XP.
+    'bosses.apps.BossesConfig',
     'events.apps.EventsConfig',
     # Before achievements: its quest-reward handler then runs ahead of the
     # achievement check, as handlers run in registration order.
@@ -241,6 +244,17 @@ QUESTIFY_DAILY_BONUS_XP = int(os.getenv('QUESTIFY_DAILY_BONUS_XP', '25'))
 QUESTIFY_DAILY_BONUS_MIN_QUESTS = int(
 	os.getenv('QUESTIFY_DAILY_BONUS_MIN_QUESTS', '3'),
 )
+# A boss pays this much XP (and as many coins) per completed step when the
+# last of at least the minimum number of steps is completed.
+QUESTIFY_BOSS_XP_PER_STEP = int(os.getenv('QUESTIFY_BOSS_XP_PER_STEP', '25'))
+QUESTIFY_BOSS_MIN_STEPS = int(os.getenv('QUESTIFY_BOSS_MIN_STEPS', '3'))
+QUESTIFY_MAX_BOSS_STEPS = int(os.getenv('QUESTIFY_MAX_BOSS_STEPS', '10'))
+# Archived bosses count toward the lifetime limit, as archived quests do.
+QUESTIFY_MAX_BOSSES_PER_USER = int(
+	os.getenv('QUESTIFY_MAX_BOSSES_PER_USER', '50'),
+)
+# Bosses neither archived nor defeated.
+QUESTIFY_MAX_ACTIVE_BOSSES = int(os.getenv('QUESTIFY_MAX_ACTIVE_BOSSES', '5'))
 
 # Requests are small JSON documents (the largest field is a 10,000-character
 # description); cap the body well below Django's 2.5 MB default.
@@ -274,6 +288,19 @@ if QUESTIFY_DAILY_BONUS_MIN_QUESTS <= 0:
 	raise ImproperlyConfigured(
 		'QUESTIFY_DAILY_BONUS_MIN_QUESTS must be positive.'
 	)
+if QUESTIFY_BOSS_XP_PER_STEP <= 0:
+	raise ImproperlyConfigured('QUESTIFY_BOSS_XP_PER_STEP must be positive.')
+if QUESTIFY_BOSS_MIN_STEPS <= 0:
+	raise ImproperlyConfigured('QUESTIFY_BOSS_MIN_STEPS must be positive.')
+if QUESTIFY_MAX_BOSS_STEPS < QUESTIFY_BOSS_MIN_STEPS:
+	# Otherwise no boss could ever be defeated.
+	raise ImproperlyConfigured(
+		'QUESTIFY_MAX_BOSS_STEPS must be at least QUESTIFY_BOSS_MIN_STEPS.'
+	)
+if QUESTIFY_MAX_BOSSES_PER_USER <= 0:
+	raise ImproperlyConfigured('QUESTIFY_MAX_BOSSES_PER_USER must be positive.')
+if QUESTIFY_MAX_ACTIVE_BOSSES <= 0:
+	raise ImproperlyConfigured('QUESTIFY_MAX_ACTIVE_BOSSES must be positive.')
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Questify API',

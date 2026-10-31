@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from events.dispatcher import dispatcher
 from events.event_types import (
     AchievementUnlockedEvent,
+    BossDefeatedEvent,
     Event,
     QuestCompletedEvent,
     SkillUnlockedEvent,
@@ -13,6 +14,7 @@ from quests.models import Streak
 from .conditions import (
     AchievementEvaluationContext,
     EVALUATOR_REGISTRY,
+    bosses_defeated_count,
     skills_unlocked_count,
 )
 from .models import Achievement, UserAchievement
@@ -24,15 +26,20 @@ User = get_user_model()
 # every type, so an achievement added later still reaches users who already
 # meet it on their next completion; that includes level_reached, since the
 # level-up happens earlier in the same completion. A skill unlock changes only
-# the unlocked-skill count.
+# the unlocked-skill count, a boss defeat only the defeated-boss count (its XP
+# is checked by the completion that dispatched it).
 CONDITION_TYPES_BY_EVENT = {
     SkillUnlockedEvent: {Achievement.ConditionType.SKILLS_UNLOCKED_COUNT},
+    BossDefeatedEvent: {Achievement.ConditionType.BOSSES_DEFEATED_COUNT},
 }
 
 
 class AchievementCheckHandler:
     def handle(self, event: Event):
-        if not isinstance(event, (QuestCompletedEvent, SkillUnlockedEvent)):
+        if not isinstance(
+            event,
+            (QuestCompletedEvent, SkillUnlockedEvent, BossDefeatedEvent),
+        ):
             return
 
         user = User.objects.select_related('character').get(pk=event.user_id)
@@ -62,6 +69,9 @@ class AchievementCheckHandler:
         if 'skills_unlocked_count' in condition_types:
             context.skills_unlocked_count = skills_unlocked_count(user)
 
+        if 'bosses_defeated_count' in condition_types:
+            context.bosses_defeated_count = bosses_defeated_count(user)
+
         if 'streak_length' in condition_types:
             context.longest_streak = (
                 Streak.objects.filter(
@@ -84,7 +94,8 @@ class AchievementCheckHandler:
                 achievement=achievement,
             )
             # SkillUnlockedEvent carries the unlock's result, so achievements
-            # it unlocks are reported in the unlock response.
+            # it unlocks are reported in the unlock response; BossDefeatedEvent
+            # carries the completion's.
             if event.result is not None:
                 event.result.achievements_unlocked.append(achievement.id)
             dispatcher.dispatch(

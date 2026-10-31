@@ -48,6 +48,19 @@ class WalletService:
         )
 
     @staticmethod
+    # No savepoint either: it runs inside complete_quest, through
+    # BossDefeatedEvent.
+    @transaction.atomic(savepoint=False)
+    def credit_boss_reward(user_id, amount, boss_defeat_id=None):
+        """Add a boss reward's coins and record them; returns the new balance."""
+        return WalletService._credit(
+            user_id,
+            amount,
+            WalletTransaction.Kind.BOSS_REWARD,
+            boss_defeat_id=boss_defeat_id,
+        )
+
+    @staticmethod
     def _credit(user_id, amount, kind, **links):
         """Add coins and write their transaction; returns the new balance.
 

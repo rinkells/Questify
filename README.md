@@ -56,7 +56,7 @@ Tokens expire after 30 days, and logging in again replaces the previous token.
 - Completing a quest (`POST /api/quests/<id>/complete/`) awards XP, updates stats and
   the daily streak, and can level the character up and unlock achievements.
 - XP rewards are set by the server (25 for daily and habit quests, 50 for one-time
-  quests) and capped per 24 hours.
+  quests) and capped per 24 hours. Boss rewards are the one exception (see Bosses).
 - Completing every active daily and habit quest of a day pays a daily bonus of 25 XP
   and as many coins, once per day in the character's timezone. It needs at least 3
   such quests. A quest whose deadline is at or before the start of the day (local
@@ -119,9 +119,49 @@ them never lowers XP, levels, achievements or skill progress.
   coins, the reward is inactive or the redemption limit for the last 24 hours is
   reached. A reward can be redeemed any number of times.
 - `GET /api/wallet/transactions/` lists every change of the balance, newest first:
-  `quest_reward`, `daily_bonus`, `redemption` (with the reward's title at the time)
-  and `initial_grant`, which gave characters that existed before the wallet their
-  earned XP as coins once.
+  `quest_reward`, `daily_bonus`, `boss_reward`, `redemption` (with the reward's title
+  at the time) and `initial_grant`, which gave characters that existed before the
+  wallet their earned XP as coins once.
+
+## Bosses
+
+A boss is a bigger goal beaten through its steps, which are your one-time quests.
+Its HP is the number of steps still to complete; it is never stored, only counted.
+
+- `/api/bosses/` manages your bosses (`title`, `description`). Each boss shows `hp`,
+  `max_hp`, its `steps` (`quest`, `title`, `status`, and `live`: whether the step
+  counts toward HP and the reward) and `defeated` (`{xp, coins, defeated_at}` or
+  `null`). A step's `status` is `open`, `completed`, `failed`, `expired` (its deadline
+  has passed) or `inactive` (its quest is deactivated or archived). `DELETE` archives
+  a boss and frees its uncompleted steps for another boss; archived bosses still
+  count toward the limit of 50, and at most 5 bosses can be in progress at once.
+- `POST /api/bosses/<id>/steps/` with `{"quest": <id>}` adds a step: one of your own
+  active, unarchived one-time quests with no completion or failure yet and no
+  passed deadline, which is not already a step of a boss. A boss has at most 10
+  steps. `DELETE /api/bosses/<id>/steps/<quest id>/` removes a step that is not
+  completed; a completed one answers 409.
+- Completing the last step beats the boss, if at least 3 steps are completed. It pays
+  25 XP per completed step, and as many coins, in full. The `complete` response
+  reports every step completed in `boss`: `{id, title, hp, max_hp, defeated}`, where
+  `defeated` is `{xp, coins}` on the completion that won, apart from `xp_gained` and
+  `coins_gained`.
+- The boss reward is the one source of XP outside the 24-hour cap: it rewards long
+  work, it is bounded from above by quotas (at most 10 steps × 25 XP per boss, set by
+  `QUESTIFY_MAX_BOSS_STEPS` and `QUESTIFY_BOSS_XP_PER_STEP`), and the steps fall under
+  the cap themselves. When the cap is spent, completing the last step is refused like
+  any other quest, and the boss waits until the cap allows it.
+- An archived step, or one whose quest became daily or habit, no longer counts toward
+  HP or the reward. A failed or expired step does no damage and blocks the boss until
+  you remove it or archive its quest; an inactive one blocks it until its quest is
+  active again. Archiving or removing the last open step does not win the fight: add
+  a new step and complete it.
+- A defeated boss is frozen as it was beaten: `hp` stays 0 and `max_hp` the steps
+  that beat it, which are the only `live` ones, whatever happens to their quests
+  later. Its other steps no longer hit it, and steps can no longer be added or removed
+  (409), but the boss can be renamed or archived.
+- The `bosses_defeated_count` achievement condition counts defeated bosses. Create an
+  example one ("Boss Slayer") with
+  `docker compose exec web python manage.py seed_achievements` (safe to run again).
 
 ## Tests and checks
 

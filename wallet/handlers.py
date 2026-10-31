@@ -1,4 +1,4 @@
-from events.event_types import Event, QuestCompletedEvent
+from events.event_types import BossDefeatedEvent, Event, QuestCompletedEvent
 from events.handlers import awarded_xp
 
 from .services import WalletService
@@ -32,3 +32,18 @@ class QuestRewardCoinsHandler:
             )
             if event.result is not None:
                 event.result.bonus_coins_gained = event.bonus_xp
+
+
+class BossRewardCoinsHandler:
+    """Credit one coin per XP a boss reward paid, in full like its XP."""
+
+    def handle(self, event: Event):
+        if not isinstance(event, BossDefeatedEvent):
+            return
+        WalletService.credit_boss_reward(
+            event.user_id,
+            event.xp_awarded,
+            event.boss_defeat_id,
+        )
+        if event.result is not None and event.result.boss is not None:
+            event.result.boss.coins_gained = event.xp_awarded
