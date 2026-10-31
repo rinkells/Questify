@@ -27,6 +27,7 @@ from achievements.views import AchievementListView, UnlockedAchievementListView
 from bosses.views import BossViewSet
 from quests.views import QuestCategoryViewSet, QuestViewSet
 from skills.views import SkillTreeView, SkillUnlockView
+from summary.views import MonthlySummaryView
 from wallet.views import RewardViewSet, WalletTransactionListView
 
 
@@ -64,6 +65,11 @@ urlpatterns = [
         'api/wallet/transactions/',
         WalletTransactionListView.as_view(),
         name='wallet-transaction-list',
+    ),
+    path(
+        'api/summary/monthly/',
+        MonthlySummaryView.as_view(),
+        name='monthly-summary',
     ),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path(

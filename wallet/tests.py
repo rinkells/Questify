@@ -1,7 +1,8 @@
 import importlib
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from django.apps import apps
@@ -103,6 +104,47 @@ def test_completion_credits_one_coin_per_xp_awarded(api_client, user):
     assert transaction_row.balance_after == 50
     assert transaction_row.quest_completion == completion
     assert coins(user) == 50
+    assert_ledger_matches(user)
+
+
+@pytest.mark.django_db
+def test_credits_are_dated_with_what_they_pay_for(user):
+    daily = [
+        Quest.objects.create(
+            user=user,
+            title=f'Daily {index}',
+            quest_type=Quest.QuestType.DAILY,
+            xp_reward=25,
+        )
+        for index in range(3)
+    ]
+    boss = Boss.objects.create(user=user, title='Dragon')
+    steps = [make_quest(user, f'Step {index}') for index in range(3)]
+    for quest in steps:
+        BossStep.objects.create(boss=boss, quest=quest)
+
+    # A fixed time, far from the real clock that inserts would default to,
+    # and from any midnight that would split the day and its bonus.
+    completed_at = datetime(2025, 6, 15, 12, 0, tzinfo=datetime_timezone.utc)
+    with patch('quests.services.timezone.now', return_value=completed_at):
+        for quest in (*daily, *steps):
+            QuestService.complete_quest(quest.id, user)
+
+    rows = WalletTransaction.objects.filter(user=user).select_related(
+        'quest_completion',
+        'daily_bonus',
+        'boss_defeat',
+    )
+    paid_for = {
+        WalletTransaction.Kind.QUEST_REWARD: lambda row: row.quest_completion.completed_at,
+        WalletTransaction.Kind.DAILY_BONUS: lambda row: row.daily_bonus.awarded_at,
+        WalletTransaction.Kind.BOSS_REWARD: lambda row: row.boss_defeat.defeated_at,
+    }
+    assert sorted(row.kind for row in rows) == sorted(
+        ['quest_reward'] * 6 + ['daily_bonus', 'boss_reward'],
+    )
+    for row in rows:
+        assert row.created_at == paid_for[row.kind](row) == completed_at
     assert_ledger_matches(user)
 
 

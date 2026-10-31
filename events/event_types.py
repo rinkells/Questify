@@ -123,4 +123,7 @@ class BossDefeatedEvent(Event):
     boss_defeat_id: int
     # Paid in full: the one XP outside the 24-hour cap. Always positive.
     xp_awarded: int
+    # BossDefeat.defeated_at, the completion's time; the coin credit is
+    # dated with it.
+    defeated_at: datetime
     result: EventResult | None = None

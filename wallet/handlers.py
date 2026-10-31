@@ -21,6 +21,7 @@ class QuestRewardCoinsHandler:
                 event.user_id,
                 coins,
                 event.completion_id,
+                created_at=event.completed_at,
             )
             if event.result is not None:
                 event.result.coins_gained = coins
@@ -29,6 +30,7 @@ class QuestRewardCoinsHandler:
                 event.user_id,
                 event.bonus_xp,
                 event.daily_bonus_id,
+                created_at=event.completed_at,
             )
             if event.result is not None:
                 event.result.bonus_coins_gained = event.bonus_xp
@@ -44,6 +46,7 @@ class BossRewardCoinsHandler:
             event.user_id,
             event.xp_awarded,
             event.boss_defeat_id,
+            created_at=event.defeated_at,
         )
         if event.result is not None and event.result.boss is not None:
             event.result.boss.coins_gained = event.xp_awarded

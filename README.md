@@ -163,6 +163,32 @@ Its HP is the number of steps still to complete; it is never stored, only counte
   example one ("Boss Slayer") with
   `docker compose exec web python manage.py seed_achievements` (safe to run again).
 
+## Monthly summary
+
+`GET /api/summary/monthly/?month=YYYY-MM` sums up one calendar month of your own
+history in your character's timezone: from local midnight on the 1st to local midnight
+on the 1st of the next month (`starts_at` and `ends_at`, in your offset). Without
+`month` it shows the current month so far. Nothing is stored: the summary is computed
+on each request, so a past month changes if its history does (an admin removing an
+unlocked achievement, for example).
+
+- `quests_completed` and `quests_failed`; `estimated_completions` counts completions
+  from before XP was recorded, whose XP was only estimated.
+- `xp` (`{total, quests, daily_bonus, bosses}`), `daily_bonuses`, `coins_earned`,
+  `coins_spent` and `balance_end` (the balance at the end of the month, or now) come
+  from the wallet, which pays one coin per XP, so they are exact and `coins_earned`
+  equals `xp.total`. The `initial_grant` counts only in the balance.
+- `bosses_defeated`, `achievements_unlocked` and `skills_unlocked` (`{count, names}`,
+  in the order they were unlocked), and `current_level`: the level now, since levels
+  have no history.
+- Summaries start with your wallet history and go back at most 24 months. For a
+  character that existed before the wallet, the history starts with its
+  `initial_grant`, and that month is `partial: true`: XP and coins earned in it before
+  the grant are missing. For everyone else it starts with the account. A future, older
+  or malformed month answers 400.
+- The endpoint has a throttle of its own (120 requests per hour per user) on top of
+  the general one.
+
 ## Tests and checks
 
 ```sh
