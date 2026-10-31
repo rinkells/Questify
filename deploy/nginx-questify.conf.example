@@ -7,8 +7,12 @@ limit_req_zone $binary_remote_addr zone=questify_admin:10m rate=2r/s;
 # is seen as the proxy and shares one login/register throttle bucket.
 server {
 	listen 443 ssl;
-	# Requests are small JSON documents; reject anything larger early.
-	client_max_body_size 64k;
+	# Requests are small JSON documents; reject anything larger early. Keep this
+	# equal to DATA_UPLOAD_MAX_MEMORY_SIZE (256 KB): a 10,000-character
+	# description written with \u escapes (json.dumps' default) takes 60 KB in
+	# Cyrillic and 120 KB for emoji, so a lower limit refuses valid requests
+	# with a bare nginx 413.
+	client_max_body_size 256k;
 	server_name questify.example.com;
 
 	ssl_certificate /etc/letsencrypt/live/questify.example.com/fullchain.pem;

@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.contrib import admin as django_admin
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
-from django.test import override_settings
+from django.test import RequestFactory, override_settings
 from rest_framework.test import APIClient
 from django.utils import timezone
 
@@ -351,9 +351,107 @@ def test_admin_cannot_delete_quests_or_mutate_completion_journal():
 	completion_admin = QuestCompletionAdmin(QuestCompletion, django_admin.site)
 
 	assert quest_admin.has_delete_permission(None) is False
+	assert quest_admin.has_add_permission(None) is False
 	assert completion_admin.has_add_permission(None) is False
 	assert completion_admin.has_change_permission(None) is False
 	assert completion_admin.has_delete_permission(None) is False
+
+
+def superuser_request():
+	request = RequestFactory().post('/admin/')
+	request.user = User.objects.create_superuser(username='root', password='password')
+	return request
+
+
+def quest_admin_form(quest, data):
+	"""A superuser's bound change form for ``quest``, with its ModelAdmin."""
+	request = superuser_request()
+	model_admin = QuestAdmin(Quest, django_admin.site)
+	form = model_admin.get_form(request, quest)(data=data, instance=quest)
+	assert form.is_valid(), form.errors
+	return model_admin, request, form
+
+
+def quest_admin_save(model_admin, request, form):
+	model_admin.save_model(request, form.save(commit=False), form, change=True)
+
+
+@pytest.mark.django_db
+def test_admin_keeps_the_rules_the_api_applies_to_a_quest(quest):
+	request = superuser_request()
+	form_class = QuestAdmin(Quest, django_admin.site).get_form(request, quest)
+
+	# Not form fields, so an admin edit cannot change them.
+	for name in ('user', 'quest_type', 'xp_reward', 'deadline', 'archived_at'):
+		assert name not in form_class.base_fields
+
+
+@pytest.mark.django_db
+def test_admin_save_does_not_restore_a_quest_archived_meanwhile(
+	api_client, user, quest,
+):
+	api_client.force_authenticate(user=user)
+	model_admin, request, form = quest_admin_form(
+		quest,
+		{'title': 'Renamed', 'is_active': 'on'},
+	)
+	# The owner deletes (archives) the quest while the admin's POST is handled.
+	assert api_client.delete(f'/api/quests/{quest.id}/').status_code == 204
+
+	quest_admin_save(model_admin, request, form)
+
+	quest.refresh_from_db()
+	assert (quest.title, quest.is_active) == ('Renamed', False)
+	assert quest.archived_at is not None
+
+
+@pytest.mark.django_db
+def test_admin_cannot_reactivate_an_archived_quest(user):
+	quest = Quest.objects.create(
+		user=user,
+		title='Archived',
+		quest_type=Quest.QuestType.ONE_TIME,
+		xp_reward=50,
+		is_active=False,
+		archived_at=timezone.now(),
+	)
+	model_admin, request, form = quest_admin_form(
+		quest,
+		{'title': 'Archived', 'is_active': 'on'},
+	)
+
+	quest_admin_save(model_admin, request, form)
+
+	quest.refresh_from_db()
+	assert quest.is_active is False
+	assert quest.archived_at is not None
+
+
+@pytest.mark.django_db
+def test_admin_offers_only_the_owners_categories(user, other_user, quest):
+	own = QuestCategory.objects.create(user=user, name='Own')
+	QuestCategory.objects.create(user=other_user, name='Foreign')
+	request = superuser_request()
+	form_class = QuestAdmin(Quest, django_admin.site).get_form(request, quest)
+
+	assert list(form_class.base_fields['category'].queryset) == [own]
+
+
+@pytest.mark.django_db
+def test_admin_does_not_write_a_category_deleted_meanwhile(user, quest):
+	category = QuestCategory.objects.create(user=user, name='Study')
+	model_admin, request, form = quest_admin_form(
+		quest,
+		{'title': quest.title, 'is_active': 'on', 'category': category.pk},
+	)
+	category.delete()
+
+	with patch.object(model_admin, 'message_user') as message_user:
+		quest_admin_save(model_admin, request, form)
+
+	quest.refresh_from_db()
+	assert quest.category_id is None
+	message_user.assert_called_once()
 
 
 @pytest.mark.django_db

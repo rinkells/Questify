@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 
 from .models import (
 	DailyBonus,
@@ -29,15 +29,56 @@ class QuestAdmin(admin.ModelAdmin):
 		'deadline',
 	)
 	list_filter = ('quest_type', 'is_active', 'category')
-	readonly_fields = ('archived_at',)
+	# Each of these has a rule that an admin edit would skip: the reward
+	# follows the server policy for the type, the type is fixed once the quest
+	# has a completion, a passed deadline cannot move and a new one must lie
+	# in 2000-2100. The owner and the per-user quota are the API's too.
+	readonly_fields = ('user', 'quest_type', 'xp_reward', 'deadline', 'archived_at')
+
+	def has_add_permission(self, request):
+		# Created through the API, which enforces the quota and the reward.
+		return False
 
 	def has_delete_permission(self, request, obj=None):
 		return False
 
+	def get_form(self, request, obj=None, **kwargs):
+		form = super().get_form(request, obj, **kwargs)
+		if obj is not None and 'category' in form.base_fields:
+			# Categories belong to users: only the owner's can be chosen.
+			form.base_fields['category'].queryset = QuestCategory.objects.filter(
+				user_id=obj.user_id,
+			)
+		return form
+
 	def save_model(self, request, obj, form, change):
-		if obj.archived_at is not None:
+		# Lock the row and write only what the form edits. A full save would
+		# put back archived_at as read when the POST began, and so restore a
+		# quest its owner archived in the meantime.
+		archived_at = Quest.objects.select_for_update().values_list(
+			'archived_at',
+			flat=True,
+		).get(pk=obj.pk)
+		fields = set(form.changed_data)
+		if archived_at is not None and 'is_active' in fields:
+			# An archived quest stays inactive (a database constraint).
 			obj.is_active = False
-		super().save_model(request, obj, form, change)
+		if 'category' in fields and obj.category_id is not None:
+			# Locked like the API does, so a category deleted meanwhile is
+			# not written as a dangling reference.
+			category_exists = QuestCategory.objects.select_for_update().filter(
+				pk=obj.category_id,
+			).values_list('pk', flat=True).first()
+			if category_exists is None:
+				fields.discard('category')
+				self.message_user(
+					request,
+					'The category was deleted in the meantime; it was not changed.',
+					messages.WARNING,
+				)
+		if fields:
+			fields.add('updated_at')
+			obj.save(update_fields=fields)
 
 
 @admin.register(QuestStatReward)
