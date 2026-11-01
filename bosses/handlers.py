@@ -91,6 +91,7 @@ class BossProgressHandler:
                 boss_id=boss['id'],
                 boss_defeat_id=defeat.id,
                 xp_awarded=defeat.xp_awarded,
+                defeated_at=defeat.defeated_at,
                 result=event.result,
             )
         )
