@@ -1,20 +1,15 @@
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Exists, OuterRef
 
-from .models import Achievement, UserAchievement
+# Re-exported: the tests and other callers import it from here.
+from .selectors import achievements_for_user
 from .serializers import AchievementSerializer
 
-
-def achievements_for_user(user):
-    return Achievement.objects.order_by('pk').annotate(
-        is_unlocked=Exists(
-            UserAchievement.objects.filter(
-                user=user,
-                achievement_id=OuterRef('pk'),
-            )
-        )
-    )
+__all__ = (
+    'AchievementListView',
+    'UnlockedAchievementListView',
+    'achievements_for_user',
+)
 
 
 class AchievementListView(ListAPIView):

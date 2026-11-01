@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import Achievement
+from .selectors import MASKED_NAME, is_masked
 
 
 class AchievementSerializer(serializers.ModelSerializer):
@@ -20,9 +21,8 @@ class AchievementSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        is_unlocked = getattr(instance, 'is_unlocked', False)
-        if instance.is_hidden and not is_unlocked:
-            representation['name'] = '???'
+        if is_masked(instance):
+            representation['name'] = MASKED_NAME
             representation['description'] = None
             representation['condition_type'] = None
             representation.pop('id', None)

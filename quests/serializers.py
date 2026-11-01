@@ -3,6 +3,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Quest, QuestCategory, QuestCompletion
+from .selectors import categories_for_user
 
 
 class QuestCategorySerializer(serializers.ModelSerializer):
@@ -32,9 +33,7 @@ class QuestSerializer(serializers.ModelSerializer):
         user = getattr(request, 'user', None) if request else None
         user = self.context.get('user', user)
         if user is not None and getattr(user, 'is_authenticated', True):
-            self.fields['category'].queryset = QuestCategory.objects.filter(
-                user=user,
-            )
+            self.fields['category'].queryset = categories_for_user(user)
 
     def validate_deadline(self, value):
         if value is not None and not 2000 <= value.year <= 2100:

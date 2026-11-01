@@ -2,6 +2,7 @@ import logging
 
 from django.db.models import F
 
+from core.levels import level_for_xp, xp_threshold
 from core.models import Character, Stat
 from quests.models import Quest, QuestStatReward
 from quests.services import StreakService
@@ -103,37 +104,17 @@ class StatUpdateHandler:
 
 
 class LevelCheckHandler:
-    @staticmethod
-    def _xp_threshold(level):
-        return round(100 * level**1.2)
-
-    @classmethod
-    def _level_for_xp(cls, xp):
-        low = 0
-        high = 1
-        while cls._xp_threshold(high) <= xp:
-            low = high
-            high *= 2
-
-        while low + 1 < high:
-            middle = (low + high) // 2
-            if cls._xp_threshold(middle) <= xp:
-                low = middle
-            else:
-                high = middle
-        return low + 1
-
     def handle(self, event: Event):
         if not isinstance(event, QuestCompletedEvent):
             return
         character = Character.objects.select_for_update().get(user_id=event.user_id)
         old_level = character.level
-        new_level = max(old_level, self._level_for_xp(character.xp))
+        new_level = max(old_level, level_for_xp(character.xp))
         if new_level == old_level:
             return
 
         character.level = new_level
-        character.xp_to_next_level = self._xp_threshold(new_level)
+        character.xp_to_next_level = xp_threshold(new_level)
         character.save(update_fields=('level', 'xp_to_next_level'))
         if event.result is not None:
             event.result.leveled_up = True

@@ -1,19 +1,22 @@
-from django.conf import settings
-from django.db import transaction
 from django.http import Http404
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
-from core.models import Character
+from core.exceptions import validation_error
 from core.serializers import DetailSerializer
 from quests.views import OwnerViewSetMixin
 
 from .models import Boss, BossStep
-from .serializers import BossSerializer, BossStepCreateSerializer, bosses_for_display
-from .services import BossConflictError, BossService, BossStepError
+from .selectors import bosses_for_display, bosses_for_user, displayed_boss
+from .serializers import BossSerializer, BossStepCreateSerializer
+from .services import (
+    BossConflictError,
+    BossLimitError,
+    BossService,
+    BossStepError,
+)
 
 
 class BossViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
@@ -21,52 +24,38 @@ class BossViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
     serializer_class = BossSerializer
 
     def get_queryset(self):
-        bosses = super().get_queryset().filter(archived_at__isnull=True)
+        bosses = bosses_for_user(self.request.user)
         if self.action in ('list', 'retrieve'):
             # Annotated, so never locked through it (see with_progress());
             # BossService locks the plain rows.
             return bosses_for_display(bosses)
         # The other actions only look the boss up, and answer with
-        # _displayed() once they are done.
+        # displayed_boss() once they are done.
         return bosses
 
-    def _displayed(self, boss_id):
-        return bosses_for_display(Boss.objects.all()).get(pk=boss_id)
-
-    @transaction.atomic
     def perform_create(self, serializer):
-        Character.locked_for_user_id(self.request.user.pk)
-        bosses = Boss.objects.filter(user=self.request.user)
-        # Archived bosses count too, as archived quests do.
-        if bosses.count() >= settings.QUESTIFY_MAX_BOSSES_PER_USER:
-            raise DRFValidationError({
-                'detail': 'Boss limit reached for this account.',
-            })
-        if bosses.filter(
-            archived_at__isnull=True,
-            defeat__isnull=True,
-        ).count() >= settings.QUESTIFY_MAX_ACTIVE_BOSSES:
-            raise DRFValidationError({
-                'detail': 'Too many bosses in progress; defeat or archive one first.',
-            })
-        boss = serializer.save(user=self.request.user)
-        serializer.instance = self._displayed(boss.pk)
+        try:
+            boss = BossService.create_boss(
+                self.request.user,
+                **serializer.validated_data,
+            )
+        except BossLimitError as exc:
+            raise validation_error(exc) from exc
+        serializer.instance = displayed_boss(boss.pk)
 
     # Title and description stay editable after a defeat; only the steps
     # are frozen.
-    @transaction.atomic
     def perform_update(self, serializer):
-        boss = Boss.objects.select_for_update().filter(
-            pk=serializer.instance.pk,
-            user=self.request.user,
-            archived_at__isnull=True,
-        ).first()
-        if boss is None:
+        try:
+            boss = BossService.update_boss(
+                self.request.user,
+                serializer.instance.pk,
+                **serializer.validated_data,
+            )
+        except Boss.DoesNotExist:
             # Archived after get_object(), as for quests.
-            raise Http404
-        serializer.instance = boss
-        serializer.save()
-        serializer.instance = self._displayed(boss.pk)
+            raise Http404 from None
+        serializer.instance = displayed_boss(boss.pk)
 
     def perform_destroy(self, instance):
         try:
@@ -105,7 +94,7 @@ class BossViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
-            self.get_serializer(self._displayed(boss.pk)).data,
+            self.get_serializer(displayed_boss(boss.pk)).data,
             status=status.HTTP_201_CREATED,
         )
 

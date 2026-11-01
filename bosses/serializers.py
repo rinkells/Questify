@@ -1,22 +1,8 @@
 from django.conf import settings
-from django.db.models import Prefetch
-from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Boss, BossStep
-
-
-def bosses_for_display(queryset):
-    """What BossSerializer reads: progress, steps and the defeat."""
-    return queryset.with_progress().prefetch_related(
-        Prefetch(
-            'steps',
-            queryset=BossStep.objects.with_status().select_related(
-                'quest',
-            ).order_by('pk'),
-        ),
-        'defeat',
-    )
+from .selectors import step_status
 
 
 class BossStepSerializer(serializers.ModelSerializer):
@@ -38,17 +24,7 @@ class BossStepSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_status(self, step) -> str:
-        if step.completed:
-            return 'completed'
-        if step.failed:
-            return 'failed'
-        # The rules complete_quest applies.
-        quest = step.quest
-        if quest.deadline is not None and quest.deadline < timezone.now():
-            return 'expired'
-        if not quest.is_active:
-            return 'inactive'
-        return 'open'
+        return step_status(step)
 
 
 class BossDefeatSerializer(serializers.Serializer):

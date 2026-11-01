@@ -3,11 +3,12 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
+from core.errors import DomainError, NotFoundError
 from core.models import Character
 from events.dispatcher import dispatcher
 from events.event_types import EventResult, QuestCompletedEvent
@@ -25,12 +26,70 @@ from .xp_cap import xp_left_in_24h
 DAILY_BONUS_QUEST_TYPES = (Quest.QuestType.DAILY, Quest.QuestType.HABIT)
 
 
-class QuestAlreadyCompletedError(ValueError):
-    pass
+# Every refusal below carries a ``code`` (see core.errors); str(exc) is the
+# English text the API sends. The code of a message with an id in it does not
+# carry the id, so a client can show its own text without one.
 
 
-class QuestAlreadyFailedError(ValueError):
-    pass
+class QuestAlreadyCompletedError(DomainError):
+    code = 'quest_already_completed'
+
+
+class QuestAlreadyFailedError(DomainError):
+    code = 'quest_already_failed'
+
+
+class QuestRuleError(DomainError):
+    """A completion or failure the rules refuse (400).
+
+    Codes: ``quest_inactive``, ``quest_deadline_passed``,
+    ``xp_limit_reached``, ``daily_fail_limit_reached`` and
+    ``lifetime_fail_limit_reached``.
+    """
+
+
+class QuestInputError(DomainError):
+    """A create, update or delete the rules refuse (400).
+
+    ``field`` names the input, or is None for the whole request. Codes:
+    ``quest_limit_reached``, ``category_limit_reached``, ``category_gone``,
+    ``deadline_locked`` and ``quest_type_locked``.
+    """
+
+
+# The XP a quest pays when completed, by type: the server's policy, not the
+# client's choice.
+XP_REWARD_BY_TYPE = {
+    Quest.QuestType.DAILY: 25,
+    Quest.QuestType.HABIT: 25,
+    Quest.QuestType.ONE_TIME: 50,
+}
+QUEST_FIELDS = frozenset((
+    'category', 'title', 'description', 'quest_type', 'is_active', 'deadline',
+))
+CATEGORY_FIELDS = frozenset(('name', 'icon'))
+
+
+def _check_fields(fields, allowed):
+    unknown = set(fields) - allowed
+    if unknown:
+        raise TypeError(f'Unexpected fields: {sorted(unknown)}')
+
+
+def _get_locked(queryset, pk, code):
+    """``queryset.get(pk=pk)`` FOR UPDATE, or ``NotFoundError``.
+
+    A malformed id is a missing row, as in DRF's get_object_or_404.
+    """
+    try:
+        return queryset.select_for_update().get(pk=pk)
+    except (
+        queryset.model.DoesNotExist,
+        TypeError,
+        ValueError,
+        DjangoValidationError,
+    ):
+        raise NotFoundError('Not found.', code=code) from None
 
 
 def local_day(now, timezone_name):
@@ -147,9 +206,15 @@ class QuestService:
                 pk=quest.category_id,
             ).name
         if quest.archived_at is not None or not quest.is_active:
-            raise ValidationError('This quest is inactive and cannot be completed.')
+            raise QuestRuleError(
+                'This quest is inactive and cannot be completed.',
+                code='quest_inactive',
+            )
         if quest.deadline is not None and quest.deadline < now:
-            raise ValidationError('This quest deadline has passed.')
+            raise QuestRuleError(
+                'This quest deadline has passed.',
+                code='quest_deadline_passed',
+            )
 
         today, day_start, next_day_start = local_day(now, character.timezone)
         if quest.quest_type in (Quest.QuestType.DAILY, Quest.QuestType.HABIT):
@@ -181,7 +246,10 @@ class QuestService:
         xp_left = xp_left_in_24h(user.id, now)
         xp_awarded = min(quest.xp_reward, xp_left)
         if xp_awarded <= 0:
-            raise ValidationError('The XP limit for the last 24 hours has been reached.')
+            raise QuestRuleError(
+                'The XP limit for the last 24 hours has been reached.',
+                code='xp_limit_reached',
+            )
 
         completion = QuestCompletion.objects.create(
             user=user,
@@ -286,7 +354,10 @@ class QuestService:
         character = Character.locked_for_user_id(user.id)
         now = timezone.now()
         if quest.archived_at is not None or not quest.is_active:
-            raise ValidationError('This quest is inactive and cannot be failed.')
+            raise QuestRuleError(
+                'This quest is inactive and cannot be failed.',
+                code='quest_inactive',
+            )
         # No deadline check: a missed deadline is exactly what a failure
         # records. Completing and moving the deadline stay closed after it,
         # so refusing this too would leave archiving as the only way out.
@@ -321,11 +392,17 @@ class QuestService:
             completed_at__gte=day_start,
             completed_at__lt=next_day_start,
         ).count() >= settings.QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER_PER_DAY:
-            raise ValidationError('The daily failed-quest limit has been reached.')
+            raise QuestRuleError(
+                'The daily failed-quest limit has been reached.',
+                code='daily_fail_limit_reached',
+            )
         if failed_completions.count() >= (
             settings.QUESTIFY_MAX_FAILED_COMPLETIONS_PER_USER
         ):
-            raise ValidationError('The lifetime failed-quest limit has been reached.')
+            raise QuestRuleError(
+                'The lifetime failed-quest limit has been reached.',
+                code='lifetime_fail_limit_reached',
+            )
 
         return QuestCompletion.objects.create(
             user=user,
@@ -335,6 +412,184 @@ class QuestService:
             xp_awarded=0,
             status=QuestCompletion.CompletionStatus.FAILED,
         )
+
+    @staticmethod
+    @transaction.atomic
+    def complete_for_user(user, quest_id):
+        """Lock the user's quest and complete it; returns the result dict.
+
+        Raises ``NotFoundError`` for an id that is not one of the user's
+        unarchived quests.
+        """
+        quest = _get_locked(_live_quests(user), quest_id, 'quest_not_found')
+        return QuestService.complete_quest(quest.pk, user, locked_quest=quest)
+
+    @staticmethod
+    @transaction.atomic
+    def fail_for_user(user, quest_id):
+        """Lock the user's quest and fail it; returns the completion row."""
+        quest = _get_locked(_live_quests(user), quest_id, 'quest_not_found')
+        return QuestService.fail_quest(quest.pk, user, locked_quest=quest)
+
+    @staticmethod
+    def _lock_category(user, category):
+        """Lock the chosen category so a concurrent DELETE cannot orphan the FK.
+
+        The caller validated the category before this transaction began;
+        without the lock a category deleted in between surfaces as a 500.
+        """
+        if category is None:
+            return
+        locked = QuestCategory.objects.select_for_update().filter(
+            pk=category.pk,
+            user=user,
+        ).first()
+        if locked is None:
+            raise QuestInputError(
+                'This category no longer exists.',
+                code='category_gone',
+                field='category',
+            )
+
+    @staticmethod
+    @transaction.atomic
+    def create_quest(user, **fields):
+        """Create a quest with the server's reward, within the user's quota.
+
+        ``fields`` are the validated inputs (``QUEST_FIELDS``; ``title`` and
+        ``quest_type`` are required) and ``category`` is a category of the
+        user's. Archived quests count toward the quota.
+        """
+        _check_fields(fields, QUEST_FIELDS)
+        Character.locked_for_user_id(user.pk)
+        if Quest.objects.filter(user=user).count() >= (
+            settings.QUESTIFY_MAX_QUESTS_PER_USER
+        ):
+            raise QuestInputError(
+                'Quest limit reached for this account.',
+                code='quest_limit_reached',
+            )
+        QuestService._lock_category(user, fields.get('category'))
+        return Quest.objects.create(
+            user=user,
+            xp_reward=XP_REWARD_BY_TYPE[fields['quest_type']],
+            **fields,
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def update_quest(user, quest_id, **fields):
+        """Change an unarchived quest of the user's; returns it.
+
+        The reward follows a change of type, which is refused once the quest
+        has a completion. A deadline that has passed cannot be changed.
+        Raises ``NotFoundError`` for an archived or foreign quest.
+        """
+        _check_fields(fields, QUEST_FIELDS)
+        quest = _get_locked(_live_quests(user), quest_id, 'quest_not_found')
+        if (
+            'deadline' in fields
+            and quest.deadline is not None
+            and quest.deadline < timezone.now()
+            and fields['deadline'] != quest.deadline
+        ):
+            raise QuestInputError(
+                'The deadline has passed and cannot be changed.',
+                code='deadline_locked',
+                field='deadline',
+            )
+        QuestService._lock_category(user, fields.get('category'))
+        new_type = fields.get('quest_type', quest.quest_type)
+        type_changed = new_type != quest.quest_type
+        if type_changed and QuestCompletion.objects.filter(
+            quest=quest,
+        ).exists():
+            raise QuestInputError(
+                'Quest type cannot change after it has a completion.',
+                code='quest_type_locked',
+                field='quest_type',
+            )
+        for name, value in fields.items():
+            setattr(quest, name, value)
+        if type_changed:
+            quest.xp_reward = XP_REWARD_BY_TYPE[new_type]
+        quest.save()
+        return quest
+
+    @staticmethod
+    @transaction.atomic
+    def archive_quest(user, quest_id):
+        """Hide the quest and deactivate it.
+
+        It stays in the history and counts toward the quota.
+        """
+        quest = _get_locked(_live_quests(user), quest_id, 'quest_not_found')
+        quest.is_active = False
+        quest.archived_at = timezone.now()
+        quest.save(update_fields=('is_active', 'archived_at', 'updated_at'))
+        return quest
+
+
+def _live_quests(user):
+    return Quest.objects.filter(user=user, archived_at__isnull=True)
+
+
+class CategoryService:
+    @staticmethod
+    @transaction.atomic
+    def create_category(user, **fields):
+        _check_fields(fields, CATEGORY_FIELDS)
+        Character.locked_for_user_id(user.pk)
+        if QuestCategory.objects.filter(user=user).count() >= (
+            settings.QUESTIFY_MAX_CATEGORIES_PER_USER
+        ):
+            raise QuestInputError(
+                'Category limit reached for this account.',
+                code='category_limit_reached',
+            )
+        return QuestCategory.objects.create(user=user, **fields)
+
+    @staticmethod
+    @transaction.atomic
+    def update_category(user, category_id, **fields):
+        """Raises ``NotFoundError`` after a concurrent DELETE."""
+        _check_fields(fields, CATEGORY_FIELDS)
+        category = _get_locked(
+            QuestCategory.objects.filter(user=user),
+            category_id,
+            'category_not_found',
+        )
+        for name, value in fields.items():
+            setattr(category, name, value)
+        category.save()
+        return category
+
+    @staticmethod
+    @transaction.atomic
+    def delete_category(user, category_id):
+        """Delete a category; its quests keep existing without one.
+
+        Serializes with quest create/update, which lock the category row too.
+        The lock order must match complete/fail (quest rows, then category):
+        taking the category first deadlocks against a concurrent completion.
+        """
+        try:
+            category_id = int(category_id)
+        except (TypeError, ValueError):
+            raise NotFoundError('Not found.', code='category_not_found') from None
+        list(
+            Quest.objects.select_for_update().filter(
+                category_id=category_id,
+                user=user,
+            ).order_by('pk').values_list('pk', flat=True)
+        )
+        category = _get_locked(
+            QuestCategory.objects.filter(user=user),
+            category_id,
+            'category_not_found',
+        )
+        category.delete()
+
 
 class StreakService:
     @staticmethod
