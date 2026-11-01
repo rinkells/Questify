@@ -1,22 +1,18 @@
-from django.conf import settings
-from drf_spectacular.utils import extend_schema
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
-from django.utils import timezone
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from django.http import Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
-# DRF's version also turns a malformed id (ValueError/TypeError) into a
-# 404; Django's raises it, a 500 on /api/quests/abc/complete/.
-from rest_framework.generics import get_object_or_404
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import Character
+from core.errors import NotFoundError
+from core.exceptions import validation_error
 from core.serializers import DetailSerializer
 
-from .models import Quest, QuestCategory, QuestCompletion
+from .models import Quest, QuestCategory
 from .permissions import IsOwner
+from .selectors import categories_for_user, quests_for_user
 from .serializers import (
 	DailyBonusStatusSerializer,
 	QuestCategorySerializer,
@@ -25,10 +21,28 @@ from .serializers import (
 	QuestSerializer,
 )
 from .services import (
+	CategoryService,
 	QuestAlreadyCompletedError,
 	QuestAlreadyFailedError,
+	QuestInputError,
+	QuestRuleError,
 	QuestService,
 )
+
+# What complete/fail answer with a 400 {'detail': message}. A Django
+# ValidationError can still come from an event handler.
+REFUSALS = (
+	QuestAlreadyCompletedError,
+	QuestAlreadyFailedError,
+	QuestRuleError,
+	DjangoValidationError,
+)
+
+
+def refusal_message(exc):
+	if isinstance(exc, DjangoValidationError):
+		return ' '.join(exc.messages)
+	return str(exc)
 
 
 class OwnerViewSetMixin:
@@ -39,111 +53,40 @@ class OwnerViewSetMixin:
 			user=self.request.user,
 		).order_by('pk')
 
-	def get_locked_object(self):
-		"""get_object(), but with the row locked FOR UPDATE."""
-		lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
-		queryset = self.filter_queryset(
-			self.get_queryset().select_for_update(),
-		)
-		obj = get_object_or_404(
-			queryset,
-			**{lookup_url_kwarg: self.kwargs[lookup_url_kwarg]},
-		)
-		self.check_object_permissions(self.request, obj)
-		return obj
-
 
 class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 	queryset = Quest.objects.all()
 	serializer_class = QuestSerializer
-	XP_REWARD_BY_TYPE = {
-		Quest.QuestType.DAILY: 25,
-		Quest.QuestType.HABIT: 25,
-		Quest.QuestType.ONE_TIME: 50,
-	}
 
 	def get_queryset(self):
-		return super().get_queryset().filter(archived_at__isnull=True)
+		return quests_for_user(self.request.user)
 
-	def _lock_category(self, serializer):
-		"""Lock the chosen category so a concurrent DELETE cannot orphan the FK.
-
-		The serializer validated the category before this transaction began;
-		without the lock a category deleted in between surfaces as a 500.
-		"""
-		category = serializer.validated_data.get('category')
-		if category is None:
-			return
-		locked = QuestCategory.objects.select_for_update().filter(
-			pk=category.pk,
-			user=self.request.user,
-		).first()
-		if locked is None:
-			raise DRFValidationError({
-				'category': 'This category no longer exists.',
-			})
-
-	@transaction.atomic
 	def perform_create(self, serializer):
-		Character.locked_for_user_id(self.request.user.pk)
-		if Quest.objects.filter(user=self.request.user).count() >= (
-			settings.QUESTIFY_MAX_QUESTS_PER_USER
-		):
-			raise DRFValidationError({
-				'detail': 'Quest limit reached for this account.',
-			})
-		self._lock_category(serializer)
-		quest_type = serializer.validated_data['quest_type']
-		serializer.save(
-			user=self.request.user,
-			xp_reward=self.XP_REWARD_BY_TYPE[quest_type],
-		)
+		try:
+			serializer.instance = QuestService.create_quest(
+				self.request.user,
+				**serializer.validated_data,
+			)
+		except QuestInputError as exc:
+			raise validation_error(exc) from exc
 
-	@transaction.atomic
 	def perform_update(self, serializer):
-		quest = get_object_or_404(
-			Quest.objects.select_for_update().filter(
-				user=self.request.user,
-				archived_at__isnull=True,
-			),
-			pk=serializer.instance.pk,
-		)
-		if (
-			'deadline' in serializer.validated_data
-			and quest.deadline is not None
-			and quest.deadline < timezone.now()
-			and serializer.validated_data['deadline'] != quest.deadline
-		):
-			raise DRFValidationError({
-				'deadline': 'The deadline has passed and cannot be changed.',
-			})
-		self._lock_category(serializer)
-		new_type = serializer.validated_data.get('quest_type', quest.quest_type)
-		if new_type != quest.quest_type and QuestCompletion.objects.filter(
-			quest=quest,
-		).exists():
-			raise DRFValidationError({
-				'quest_type': 'Quest type cannot change after it has a completion.',
-			})
+		try:
+			serializer.instance = QuestService.update_quest(
+				self.request.user,
+				serializer.instance.pk,
+				**serializer.validated_data,
+			)
+		except NotFoundError:
+			raise Http404 from None
+		except QuestInputError as exc:
+			raise validation_error(exc) from exc
 
-		serializer.instance = quest
-		if new_type != quest.quest_type:
-			serializer.save(xp_reward=self.XP_REWARD_BY_TYPE[new_type])
-		else:
-			serializer.save()
-
-	@transaction.atomic
 	def perform_destroy(self, instance):
-		quest = get_object_or_404(
-			Quest.objects.select_for_update().filter(
-				user=self.request.user,
-				archived_at__isnull=True,
-			),
-			pk=instance.pk,
-		)
-		quest.is_active = False
-		quest.archived_at = timezone.now()
-		quest.save(update_fields=('is_active', 'archived_at', 'updated_at'))
+		try:
+			QuestService.archive_quest(self.request.user, instance.pk)
+		except NotFoundError:
+			raise Http404 from None
 
 	# Neither action reads a body; without request=None the schema would ask
 	# for the viewset's QuestSerializer.
@@ -158,25 +101,12 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 	@action(detail=True, methods=('post',))
 	def complete(self, request, pk=None):
 		try:
-			with transaction.atomic():
-				quest = self.get_locked_object()
-				result = QuestService.complete_quest(
-					quest.pk,
-					request.user,
-					locked_quest=quest,
-				)
-		except (
-			QuestAlreadyCompletedError,
-			QuestAlreadyFailedError,
-			DjangoValidationError,
-		) as exc:
-			message = (
-				' '.join(exc.messages)
-				if isinstance(exc, DjangoValidationError)
-				else str(exc)
-			)
+			result = QuestService.complete_for_user(request.user, pk)
+		except NotFoundError:
+			raise Http404 from None
+		except REFUSALS as exc:
 			return Response(
-				{'detail': message},
+				{'detail': refusal_message(exc)},
 				status=status.HTTP_400_BAD_REQUEST,
 			)
 		return Response(QuestCompleteResponseSerializer(result).data)
@@ -192,25 +122,12 @@ class QuestViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 	@action(detail=True, methods=('post',))
 	def fail(self, request, pk=None):
 		try:
-			with transaction.atomic():
-				quest = self.get_locked_object()
-				completion = QuestService.fail_quest(
-					quest.pk,
-					request.user,
-					locked_quest=quest,
-				)
-		except (
-			QuestAlreadyCompletedError,
-			QuestAlreadyFailedError,
-			DjangoValidationError,
-		) as exc:
-			message = (
-				' '.join(exc.messages)
-				if isinstance(exc, DjangoValidationError)
-				else str(exc)
-			)
+			completion = QuestService.fail_for_user(request.user, pk)
+		except NotFoundError:
+			raise Http404 from None
+		except REFUSALS as exc:
 			return Response(
-				{'detail': message},
+				{'detail': refusal_message(exc)},
 				status=status.HTTP_400_BAD_REQUEST,
 			)
 		return Response(
@@ -229,44 +146,32 @@ class QuestCategoryViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 	queryset = QuestCategory.objects.all()
 	serializer_class = QuestCategorySerializer
 
-	@transaction.atomic
-	def perform_create(self, serializer):
-		Character.locked_for_user_id(self.request.user.pk)
-		if QuestCategory.objects.filter(user=self.request.user).count() >= (
-			settings.QUESTIFY_MAX_CATEGORIES_PER_USER
-		):
-			raise DRFValidationError({
-				'detail': 'Category limit reached for this account.',
-			})
-		serializer.save(user=self.request.user)
+	def get_queryset(self):
+		return categories_for_user(self.request.user)
 
-	@transaction.atomic
+	def perform_create(self, serializer):
+		try:
+			serializer.instance = CategoryService.create_category(
+				self.request.user,
+				**serializer.validated_data,
+			)
+		except QuestInputError as exc:
+			raise validation_error(exc) from exc
+
 	def perform_update(self, serializer):
 		# A 404 when a concurrent DELETE removed the category after
 		# get_object(), as for quests.
-		category = get_object_or_404(
-			QuestCategory.objects.select_for_update().filter(
-				user=self.request.user,
-			),
-			pk=serializer.instance.pk,
-		)
-		serializer.instance = category
-		serializer.save()
+		try:
+			serializer.instance = CategoryService.update_category(
+				self.request.user,
+				serializer.instance.pk,
+				**serializer.validated_data,
+			)
+		except NotFoundError:
+			raise Http404 from None
 
-	@transaction.atomic
 	def perform_destroy(self, instance):
-		# Serialize with quest create/update, which lock the category row too.
-		# Lock order must match complete/fail (quest rows, then category):
-		# taking the category first deadlocks against a concurrent completion.
-		list(
-			Quest.objects.select_for_update().filter(
-				category_id=instance.pk,
-			).order_by('pk').values_list('pk', flat=True)
-		)
-		category = get_object_or_404(
-			QuestCategory.objects.select_for_update().filter(
-				user=self.request.user,
-			),
-			pk=instance.pk,
-		)
-		category.delete()
+		try:
+			CategoryService.delete_category(self.request.user, instance.pk)
+		except NotFoundError:
+			raise Http404 from None

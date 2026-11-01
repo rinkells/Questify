@@ -3,6 +3,7 @@ from functools import cached_property
 
 from django.db import transaction
 
+from core.errors import DomainError
 from core.models import Character
 from events.dispatcher import dispatcher
 from events.event_types import EventResult, SkillUnlockedEvent
@@ -20,20 +21,24 @@ from .models import (
 RequirementType = SkillRequirement.RequirementType
 
 
-class SkillNotFoundError(LookupError):
-    pass
+class SkillNotFoundError(DomainError, LookupError):
+    code = 'skill_not_found'
 
 
-class SkillUnlockError(ValueError):
-    pass
+class SkillUnlockError(DomainError):
+    code = 'skill_unlock_refused'
 
 
 class SkillRequirementsNotMetError(SkillUnlockError):
-    pass
+    """Params: ``unmet``, the requirements not met, as dicts."""
+
+    code = 'skill_requirements_not_met'
 
 
 class SkillParentLockedError(SkillUnlockError):
-    pass
+    """Params: ``parent`` and ``skill``, the names."""
+
+    code = 'skill_parent_locked'
 
 
 @dataclass(frozen=True)
@@ -242,12 +247,15 @@ class SkillService:
         if context.status(skill, progress) != 'available':
             if context.parent_locked(skill):
                 raise SkillParentLockedError(
-                    f'Unlock "{skill.parent.name}" before "{skill.name}".'
+                    f'Unlock "{skill.parent.name}" before "{skill.name}".',
+                    parent=skill.parent.name,
+                    skill=skill.name,
                 )
             raise SkillRequirementsNotMetError(
                 'Requirements not met: '
                 + '; '.join(item.describe() for item in progress if not item.met)
-                + '.'
+                + '.',
+                unmet=[asdict(item) for item in progress if not item.met],
             )
 
         user_skill = UserSkill.objects.create(user=user, skill=skill)

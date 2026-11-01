@@ -1,25 +1,24 @@
-from django.conf import settings
-from django.db import transaction
-from django.utils import timezone
+from django.http import Http404
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from core.models import Character
+from core.errors import NotFoundError
+from core.exceptions import validation_error
 from core.serializers import DetailSerializer
 from quests.views import OwnerViewSetMixin
 
-from .models import Reward, WalletTransaction
+from .models import Reward
+from .selectors import rewards_for_user, transactions_for_user
 from .serializers import (
     RedeemResponseSerializer,
     RewardSerializer,
     WalletTransactionSerializer,
 )
-from .services import RedemptionError, WalletService
+from .services import RedemptionError, RewardLimitError, RewardService, WalletService
 
 
 class RewardViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
@@ -27,34 +26,35 @@ class RewardViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
     serializer_class = RewardSerializer
 
     def get_queryset(self):
-        return super().get_queryset().filter(archived_at__isnull=True)
+        return rewards_for_user(self.request.user)
 
-    @transaction.atomic
     def perform_create(self, serializer):
-        Character.locked_for_user_id(self.request.user.pk)
-        # Archived rewards count too, as archived quests do.
-        if Reward.objects.filter(user=self.request.user).count() >= (
-            settings.QUESTIFY_MAX_REWARDS_PER_USER
-        ):
-            raise DRFValidationError({
-                'detail': 'Reward limit reached for this account.',
-            })
-        serializer.save(user=self.request.user)
+        try:
+            serializer.instance = RewardService.create_reward(
+                self.request.user,
+                **serializer.validated_data,
+            )
+        except RewardLimitError as exc:
+            raise validation_error(exc) from exc
 
-    # Both lock the reward again, so an edit waits for a redemption reading
-    # the cost, and a reward archived after get_object() is a 404, as for
-    # quests.
-    @transaction.atomic
+    # Update and archive lock the reward again, so an edit waits for a
+    # redemption reading the cost, and a reward archived after get_object()
+    # is a 404, as for quests.
     def perform_update(self, serializer):
-        serializer.instance = self.get_locked_object()
-        serializer.save()
+        try:
+            serializer.instance = RewardService.update_reward(
+                self.request.user,
+                serializer.instance.pk,
+                **serializer.validated_data,
+            )
+        except NotFoundError:
+            raise Http404 from None
 
-    @transaction.atomic
     def perform_destroy(self, instance):
-        reward = self.get_locked_object()
-        reward.is_active = False
-        reward.archived_at = timezone.now()
-        reward.save(update_fields=('is_active', 'archived_at', 'updated_at'))
+        try:
+            RewardService.archive_reward(self.request.user, instance.pk)
+        except NotFoundError:
+            raise Http404 from None
 
     @extend_schema(
         request=None,
@@ -67,12 +67,9 @@ class RewardViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=('post',))
     def redeem(self, request, pk=None):
         try:
-            with transaction.atomic():
-                reward = self.get_locked_object()
-                redemption = WalletService.redeem(
-                    request.user,
-                    locked_reward=reward,
-                )
+            redemption = WalletService.redeem_reward(request.user, pk)
+        except NotFoundError:
+            raise Http404 from None
         except RedemptionError as exc:
             return Response(
                 {'detail': str(exc)},
@@ -89,6 +86,4 @@ class WalletTransactionListView(ListAPIView):
     permission_classes = (IsAuthenticated,)
 
     def get_queryset(self):
-        return WalletTransaction.objects.filter(
-            user=self.request.user,
-        ).select_related('redemption').order_by('-created_at', '-pk')
+        return transactions_for_user(self.request.user)
