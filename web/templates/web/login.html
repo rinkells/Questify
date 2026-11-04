@@ -1,0 +1,23 @@
+{% extends "web/base.html" %}
+{% block title %}Вхід{% endblock %}
+{% block page %}
+<main class="auth">
+  {% include "web/partials/messages.html" %}
+  <section class="card auth__card">
+    <div>
+      <h1 class="title">Вхід</h1>
+      <p class="subtitle">Раді бачити тебе знову.</p>
+    </div>
+    {% if page_error %}<div class="alert alert--error" role="alert">{{ page_error }}</div>{% endif %}
+    {% for error in errors.non_field_errors %}<div class="alert alert--error" role="alert">{{ error }}</div>{% endfor %}
+    <form class="form" method="post" action="{% url 'web:login' %}">
+      {% csrf_token %}
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+      {% include "web/partials/field.html" with name="username" label="Ім’я користувача" value=form_values.username autocomplete="username" maxlength=150 field_errors=errors.username %}
+      {% include "web/partials/field.html" with name="password" label="Пароль" type="password" autocomplete="current-password" field_errors=errors.password %}
+      <button class="btn btn--primary btn--block" type="submit">Увійти</button>
+    </form>
+    <p class="auth__switch">Ще немає акаунта? <a href="{% url 'web:register' %}">Зареєструватися</a></p>
+  </section>
+</main>
+{% endblock %}

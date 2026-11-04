@@ -1,0 +1,37 @@
+{% load web_extras %}<aside class="layout__aside" id="today-aside" aria-label="Підсумки"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <section class="card card--compact">
+    <div class="card__label">Серія</div>
+    <div class="card__figure card__figure--icon">
+      <svg class="icon--streak" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.4-.5-2-1-3-1.1-2.1-.2-4.1 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.2.4-2.3 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+      <span>{{ overview.current_streak }} {{ overview.current_streak|uk_plural:"день,дні,днів" }}</span>
+    </div>
+    <p class="card__note">Заморозок: {{ overview.streak_freezes }}. Вона рятує серію після пропущеного дня, нова з’являється кожні 5 рівнів.</p>
+  </section>
+
+  <section class="card card--compact">
+    <div class="card__label">XP за 24 години</div>
+    <div class="card__figure">
+      <span>{{ xp_usage.earned }}</span>
+      <span class="card__figure-unit">з {{ xp_usage.cap }}</span>
+    </div>
+    <progress class="progress progress--sm" value="{{ xp_usage.earned }}" max="{{ xp_usage.cap }}" aria-label="XP за 24 години"></progress>
+    <p class="card__note">Коли ліміт майже вичерпано, нагорода за квест урізається до залишку.</p>
+  </section>
+
+  <section class="card card--compact">
+    <div class="card__label">Наступна ачівка</div>
+    {% if next_achievement %}
+    <div class="achievement-next">
+      <div class="achievement-next__icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M6.5 17H20v4H6.5A2.5 2.5 0 0 1 4 19.5"/></svg>
+      </div>
+      <div>
+        <div class="achievement-next__name">{{ next_achievement.name }}</div>
+        {% if next_achievement.description %}<div class="achievement-next__text">{{ next_achievement.description }}</div>{% endif %}
+      </div>
+    </div>
+    {% else %}
+    <p class="card__note">Наразі немає ачівок, які можна отримати.</p>
+    {% endif %}
+  </section>
+</aside>

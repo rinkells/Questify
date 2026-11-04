@@ -153,6 +153,8 @@ INSTALLED_APPS = [
     'skills.apps.SkillsConfig',
     # Reads the apps above and is imported by none of them.
     'summary.apps.SummaryConfig',
+    # The server-rendered UI; it calls the services above and nothing imports it.
+    'web.apps.WebConfig',
 ]
 
 REST_FRAMEWORK = {
@@ -217,6 +219,38 @@ else:
 	raise ImproperlyConfigured(
 		'Set REDIS_URL to a shared cache backend when DEBUG is False.'
 	)
+
+# Web sessions. Fixed at 30 days from login, like API tokens: no setting renews
+# them, as SESSION_SAVE_EVERY_REQUEST would. Web logins and API tokens are
+# independent, and an account may hold several sessions at once.
+SESSION_COOKIE_AGE = 30 * 24 * 60 * 60
+LOGIN_URL = '/login/'
+LOGIN_REDIRECT_URL = '/today/'
+CSRF_FAILURE_VIEW = 'web.views.csrf_failure'
+
+
+def parse_csrf_trusted_origins(value, *, debug):
+	"""The origins allowed to post forms when the Host header cannot vouch.
+
+	Only needed when a proxy changes Host. In production an origin must be
+	https:// and name its host exactly: a wildcard would let any subdomain,
+	and plain http anyone on the network path, past the CSRF origin check.
+	"""
+	origins = [origin.strip() for origin in value.split(',') if origin.strip()]
+	if not debug:
+		for origin in origins:
+			if not origin.startswith('https://') or '*' in origin:
+				raise ImproperlyConfigured(
+					'CSRF_TRUSTED_ORIGINS must list exact https:// origins in '
+					'production, without wildcards.'
+				)
+	return origins
+
+
+CSRF_TRUSTED_ORIGINS = parse_csrf_trusted_origins(
+	os.getenv('CSRF_TRUSTED_ORIGINS', ''),
+	debug=DEBUG,
+)
 
 AUTH_TOKEN_TTL_DAYS = int(os.getenv('AUTH_TOKEN_TTL_DAYS', '30'))
 if AUTH_TOKEN_TTL_DAYS <= 0:
@@ -323,6 +357,9 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'core.middleware.ApiNoStoreMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    # Above CsrfViewMiddleware, which reads request.POST and so would parse the
+    # multipart body it exists to refuse.
+    'web.middleware.RejectMultipartMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'core.middleware.AdminLoginRateLimitMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -330,6 +367,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'web.middleware.HtmxSessionExpiryMiddleware',
+    # Below AuthenticationMiddleware: it reads the user's timezone.
+    'web.middleware.WebContextMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'

@@ -77,6 +77,8 @@ urlpatterns = [
         SpectacularSwaggerView.as_view(url_name='schema'),
         name='swagger-ui',
     ),
+    # Last: the web UI's pages sit at the root.
+    path('', include('web.urls')),
 ]
 
 if settings.DEBUG:

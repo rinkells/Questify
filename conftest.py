@@ -21,3 +21,16 @@ def isolated_test_cache():
 		CACHES={'default': {**cache_config, 'LOCATION': test_location}},
 	):
 		yield
+
+
+@pytest.fixture(autouse=True, scope='session')
+def plain_static_storage():
+	"""Render {% static %} without the manifest collectstatic would build."""
+	storages = {
+		**settings.STORAGES,
+		'staticfiles': {
+			'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+		},
+	}
+	with override_settings(STORAGES=storages):
+		yield

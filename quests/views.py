@@ -169,6 +169,8 @@ class QuestCategoryViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
 			)
 		except NotFoundError:
 			raise Http404 from None
+		except QuestInputError as exc:
+			raise validation_error(exc) from exc
 
 	def perform_destroy(self, instance):
 		try:

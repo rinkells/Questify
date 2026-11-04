@@ -6,7 +6,13 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from .models import Achievement, UserAchievement
-from .selectors import MASKED_NAME, achievement_cards, is_masked
+from .selectors import (
+    MASKED_NAME,
+    achievement_cards,
+    achievement_names,
+    is_masked,
+    next_achievement,
+)
 
 User = get_user_model()
 
@@ -118,3 +124,40 @@ def test_cards_take_one_query_whatever_the_number_of_achievements(
 def test_is_masked_treats_an_unannotated_achievement_as_locked(db):
     assert is_masked(make_achievement('Secret', hidden=True))
     assert not is_masked(make_achievement('Plain'))
+
+
+def test_next_achievement_is_the_first_visible_one_not_earned(
+    user,
+    other_user,
+    django_assert_num_queries,
+):
+    make_achievement('Secret', hidden=True)
+    earned = make_achievement('Earned')
+    unlock(user, earned)
+    expected = make_achievement('Next')
+    make_achievement('Later')
+    # Earned by someone else: still next for this user.
+    unlock(other_user, expected)
+
+    with django_assert_num_queries(1):
+        assert next_achievement(user) == expected
+
+
+def test_next_achievement_is_none_when_only_hidden_ones_are_left(user):
+    make_achievement('Secret', hidden=True)
+
+    assert next_achievement(user) is None
+
+
+def test_achievement_names_take_one_query_and_none_without_ids(
+    db,
+    django_assert_num_queries,
+):
+    second = make_achievement('Second')
+    first = make_achievement('First')
+    make_achievement('Not asked for')
+
+    with django_assert_num_queries(1):
+        assert achievement_names([first.pk, second.pk]) == ['Second', 'First']
+    with django_assert_num_queries(0):
+        assert achievement_names([]) == []

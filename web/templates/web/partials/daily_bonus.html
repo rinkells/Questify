@@ -1,0 +1,20 @@
+{% load web_extras %}<div class="bonus" id="daily-bonus"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="bonus__line">
+    <span class="bonus__label">Бонус дня</span>
+    {% if bonus.awarded %}
+    <span class="bonus__status">Отримано сьогодні</span>
+    {% else %}
+    <span class="bonus__status">Виконано {{ bonus.completed }} з {{ bonus.required }}</span>
+    {% endif %}
+    <progress class="progress progress--thin progress--accent bonus__progress" value="{{ bonus.completed }}" max="{{ bonus.required }}" aria-label="Прогрес бонусу дня"></progress>
+    <span class="bonus__reward">
+      <span class="tag tag--xp">+{{ bonus.xp }} XP</span>
+      <span class="tag">+{{ bonus.xp }} {{ bonus.xp|uk_plural:"монета,монети,монет" }}</span>
+    </span>
+  </div>
+  {% if bonus_hint == "too_few" %}
+  <p class="bonus__note">Для бонусу потрібно щонайменше {{ bonus.required }} щоденних квестів чи звичок.</p>
+  {% elif bonus_hint == "lost" %}
+  <p class="bonus__note">Сьогодні бонус уже недоступний: один із квестів провалено або його дедлайн минув.</p>
+  {% endif %}
+</div>

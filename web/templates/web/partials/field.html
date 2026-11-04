@@ -1,0 +1,6 @@
+{# ``prefix`` is for a page holding the same input more than once: the ids must differ. #}{% with field_id=prefix|default:"id" %}<div class="field{% if field_errors %} field--error{% endif %}">
+  <label class="field__label" for="{{ field_id }}_{{ name }}">{{ label }}</label>
+  <input class="field__input" id="{{ field_id }}_{{ name }}" name="{{ name }}" type="{{ type|default:'text' }}"{% if value %} value="{{ value }}"{% endif %}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if maxlength %} maxlength="{{ maxlength }}"{% endif %}{% if min %} min="{{ min }}"{% endif %}{% if max %} max="{{ max }}"{% endif %}{% if not optional %} required{% endif %}{% if readonly %} readonly{% endif %}{% if field_errors %} aria-invalid="true" aria-describedby="{{ field_id }}_{{ name }}_error"{% elif hint %} aria-describedby="{{ field_id }}_{{ name }}_hint"{% endif %}>
+  {% if hint %}<div class="field__hint" id="{{ field_id }}_{{ name }}_hint">{{ hint }}</div>{% endif %}
+  {% if field_errors %}<div class="field__error" id="{{ field_id }}_{{ name }}_error">{% for error in field_errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+</div>{% endwith %}

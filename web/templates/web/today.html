@@ -1,0 +1,43 @@
+{% extends "web/base.html" %}
+{% block title %}Сьогодні{% endblock %}
+{% block content %}
+<div class="layout">
+  <main class="layout__main">
+    {% include "web/partials/character_card.html" %}
+    <section class="section">
+      <div class="section__head">
+        <div>
+          <h1 class="title">Сьогодні</h1>
+          {% include "web/partials/today_summary.html" %}
+        </div>
+        {% url 'web:today' as today_url %}
+        {% include "web/partials/new_quest_button.html" with back=today_url %}
+      </div>
+      {% include "web/partials/daily_bonus.html" %}
+
+      {% if quests.routines %}
+      <h2 class="section__label">Щоденні та звички</h2>
+      <div class="quest-list" role="list">
+        {% for item in quests.routines %}{% include "web/partials/quest_row.html" %}{% endfor %}
+      </div>
+      {% endif %}
+
+      {% if quests.one_time or finished %}
+      <h2 class="section__label">Разові</h2>
+      <div class="quest-list" role="list">
+        {% for item in quests.one_time %}{% include "web/partials/quest_row.html" %}{% endfor %}
+        {% for item in finished %}{% include "web/partials/quest_row.html" %}{% endfor %}
+      </div>
+      {% endif %}
+      {% include "web/partials/today_more.html" %}
+
+      {% if not quests.routines and not quests.one_time and not finished %}
+      <div class="card card--compact">
+        <p>На сьогодні квестів немає.</p>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+  {% include "web/partials/today_aside.html" %}
+</div>
+{% endblock %}

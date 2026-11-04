@@ -1,0 +1,17 @@
+{% extends "web/base.html" %}
+{% block title %}Нагороди{% endblock %}
+{% block content %}
+<main class="layout__main">
+  <section class="section">
+    <div class="section__head">
+      <h1 class="title">Нагороди</h1>
+      <a class="btn btn--primary" href="{% url 'web:reward-new' %}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Нова нагорода
+      </a>
+    </div>
+    {% include "web/partials/reward_browser.html" %}
+  </section>
+  {% include "web/partials/wallet_history.html" %}
+</main>
+{% endblock %}

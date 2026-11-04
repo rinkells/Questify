@@ -1,0 +1,12 @@
+{% load web_extras %}{# One page of the history. "Show more" sits inside the list and is replaced by the next page, so the rows land right after the ones already there. #}
+{% for item in history.items %}<li class="history__row">
+  <div class="history__body">
+    <div class="history__title">{{ item|transaction_label }}</div>
+    <div class="history__meta">{{ item.created_at|date:"j E Y, H:i" }}</div>
+  </div>
+  <div class="history__amounts">
+    <span class="history__amount{% if item.amount > 0 %} history__amount--earned{% endif %}">{{ item.amount|signed_amount }}</span>
+    <span class="history__balance">баланс {{ item.balance_after }}</span>
+  </div>
+</li>
+{% endfor %}{% if more_url %}<li class="history__more" id="history-more"><a class="btn btn--quiet btn--sm" href="{{ more_url }}" hx-boost="true" hx-target="#history-more" hx-swap="outerHTML show:none" hx-push-url="false" hx-sync="this:drop" hx-disabled-elt="this">Показати ще</a></li>{% endif %}

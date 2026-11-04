@@ -1,0 +1,53 @@
+{% load web_extras %}{% with quest=item.quest %}<div class="quest-row{% if quest.archived_at %} quest-row--archived{% elif item.state == 'completed' %} quest-row--done{% elif item.state == 'failed' %} quest-row--failed{% endif %}" role="listitem" data-quest-row="{{ quest.pk }}">
+  {% if item.state == "completed" %}
+  <div class="check check--done" role="img" aria-label="Виконано">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+  </div>
+  {% elif item.state == "failed" %}
+  <div class="check check--failed" role="img" aria-label="Не вдалось">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </div>
+  {% elif item.can_complete %}
+  <form class="quest-row__form" method="post" action="{% url 'web:quest-complete' quest.pk %}" hx-post="{% url 'web:quest-complete' quest.pk %}" hx-target="closest .quest-row" hx-swap="outerHTML" hx-sync="closest .quest-row:drop" hx-disabled-elt="find button">
+    {% csrf_token %}
+    {% if list_mode %}<input type="hidden" name="list_url" value="{{ list_url }}">{% endif %}
+    <button class="check" type="submit" aria-label="Виконати: {{ quest.title }}"></button>
+  </form>
+  {% else %}
+  <div class="check check--off" aria-hidden="true"></div>
+  {% endif %}
+  <div class="quest-row__body">
+    <div class="quest-row__title">{{ quest.title }}</div>
+    <div class="quest-row__meta">
+      {% if quest.category %}<span class="dot dot--{{ quest.category|category_color }}"></span>{% endif %}
+      <span>{% if quest.category %}{{ quest.category.name }} · {% endif %}{{ quest.quest_type|quest_type_label }}{% if quest.deadline and item.state == "open" %} · до {{ quest.deadline|date:"j E, H:i" }}{% endif %}{% if list_mode and item.last_done_at %} · виконано {{ item.last_done_at|date:"j E" }}{% endif %}</span>
+    </div>
+  </div>
+  <div class="quest-row__tags">
+    {% if quest.archived_at %}<span class="tag">В архіві</span>{% elif not quest.is_active %}<span class="tag">Вимкнено</span>{% endif %}
+    {% if item.state == "open" and item.expired %}<span class="tag tag--late">Дедлайн минув</span>{% endif %}
+    {% if item.state == "failed" %}<span class="tag tag--late">Не вдалось</span>{% endif %}
+    <span class="tag{% if item.state == 'open' and not quest.archived_at %} tag--xp{% else %} tag--done{% endif %}">+{{ quest.xp_reward }} XP</span>
+    {% for reward in quest.stat_rewards.all %}<span class="tag{% if item.state != 'open' %} tag--done{% endif %}">+{{ reward.amount }} {{ reward.stat_type.name }}</span>{% endfor %}
+  </div>
+  {% if item.can_fail or list_mode and not quest.archived_at %}
+  <div class="quest-row__actions">
+    {% if item.can_fail %}
+    <form class="quest-row__form" method="post" action="{% url 'web:quest-fail' quest.pk %}" hx-post="{% url 'web:quest-fail' quest.pk %}" hx-target="closest .quest-row" hx-swap="outerHTML" hx-sync="closest .quest-row:drop" hx-disabled-elt="find button">
+      {% csrf_token %}
+      {% if list_mode %}<input type="hidden" name="list_url" value="{{ list_url }}">{% endif %}
+      <button class="btn btn--quiet btn--sm" type="submit">Не вдалось</button>
+    </form>
+    {% endif %}
+    {% if list_mode and not quest.archived_at %}
+    <a class="btn btn--quiet btn--sm" href="{% url 'web:quest-edit' quest.pk %}?next={{ list_url|urlencode }}" aria-label="Змінити: {{ quest.title }}">Змінити</a>
+    <form class="quest-row__form" method="post" action="{% url 'web:quest-archive' quest.pk %}" hx-post="{% url 'web:quest-archive' quest.pk %}" hx-target="closest .quest-row" hx-swap="outerHTML" hx-sync="closest .quest-row:drop" hx-disabled-elt="find button" hx-confirm="Перенести квест в архів? Повернути його звідти не можна.">
+      {% csrf_token %}
+      <input type="hidden" name="list_url" value="{{ list_url }}">
+      <button class="btn btn--quiet btn--sm" type="submit" aria-label="В архів: {{ quest.title }}">В архів</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if row_error %}<div class="alert alert--error quest-row__alert" role="alert">{{ row_error }}</div>{% endif %}
+</div>{% endwith %}

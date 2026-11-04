@@ -38,13 +38,17 @@ class QuestSerializer(serializers.ModelSerializer):
     def validate_deadline(self, value):
         if value is not None and not 2000 <= value.year <= 2100:
             raise serializers.ValidationError(
-                'Deadline must be between the years 2000 and 2100.'
+                'Deadline must be between the years 2000 and 2100.',
+                code='deadline_out_of_range',
             )
         # A new or changed deadline must lie ahead; resubmitting the stored
         # value (PUT) stays valid.
         unchanged = self.instance is not None and value == self.instance.deadline
         if value is not None and not unchanged and value < timezone.now():
-            raise serializers.ValidationError('Deadline must be in the future.')
+            raise serializers.ValidationError(
+                'Deadline must be in the future.',
+                code='deadline_in_past',
+            )
         return value
 
     class Meta:

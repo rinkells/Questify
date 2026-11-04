@@ -1,0 +1,9 @@
+{% extends "web/base.html" %}
+{% block title %}Отримати нагороду{% endblock %}
+{% block content %}
+{# Reached without JavaScript, or in a new tab. hx-disable: the form posts normally and the redirect brings the list, which is not on this page to be swapped. #}
+<main class="form-page section" hx-disable>
+  <h1 class="title">Отримати нагороду</h1>
+  {% include "web/partials/reward_card.html" %}
+</main>
+{% endblock %}

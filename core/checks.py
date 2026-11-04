@@ -62,3 +62,26 @@ def check_admin_allowlist_sees_real_client_ip(app_configs, **kwargs):
 		),
 		id='core.W001',
 	)]
+
+
+@register(Tags.security)
+def check_secure_cookies_have_an_https_redirect(app_configs, **kwargs):
+	"""Warn when logging in over plain HTTP would silently not stick.
+
+	Session and CSRF cookies are Secure in production, so a browser drops them
+	on plain HTTP: the login form answers with a CSRF error, or a login is lost
+	on the next page. SECURE_SSL_REDIRECT is what sends visitors to HTTPS.
+	"""
+	if settings.DEBUG or settings.SECURE_SSL_REDIRECT:
+		return []
+	if not (settings.SESSION_COOKIE_SECURE or settings.CSRF_COOKIE_SECURE):
+		return []
+	return [Warning(
+		'SECURE_SSL_REDIRECT is off while session or CSRF cookies are Secure.',
+		hint=(
+			'Over plain HTTP the browser drops these cookies, so nobody can '
+			'log in to the web UI. Turn SECURE_SSL_REDIRECT on, or make sure '
+			'a proxy in front of Django redirects every visitor to HTTPS.'
+		),
+		id='core.W002',
+	)]

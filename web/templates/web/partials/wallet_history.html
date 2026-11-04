@@ -1,0 +1,11 @@
+<section class="section" id="wallet-history"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <h2 class="section__label">Історія монет</h2>
+  {% if later_page %}<p class="section__more"><a class="link" href="{% url 'web:rewards' %}">До початку історії</a></p>{% endif %}
+  {% if history.items %}
+  <ul class="history">{% include "web/partials/transaction_page.html" %}</ul>
+  {% else %}
+  <div class="card card--compact">
+    <p>Операцій поки немає. Монети приходять разом із XP за виконані квести.</p>
+  </div>
+  {% endif %}
+</section>

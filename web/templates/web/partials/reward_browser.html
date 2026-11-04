@@ -1,0 +1,21 @@
+{% load web_extras %}{# The balance and the cards: what an action replaces whole, since spending coins changes what every card can offer. #}
+<div class="reward-browser" id="reward-browser">
+  <section class="card card--compact">
+    <div class="card__label">Баланс</div>
+    <div class="card__figure">
+      <span>{{ balance }}</span>
+      <span class="card__figure-unit">{{ balance|uk_plural:"монета,монети,монет" }}</span>
+    </div>
+  </section>
+  {% if list_error %}<div class="alert alert--error" role="alert">{{ list_error }}</div>{% endif %}
+  {% if cards %}
+  <ul class="reward-grid">
+    {% for card in cards %}<li class="reward-grid__item">{% include "web/partials/reward_card.html" %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="card card--compact">
+    <p>Нагород поки немає. Створи першу: те, чим хочеш себе винагородити за монети.</p>
+  </div>
+  {% endif %}
+</div>

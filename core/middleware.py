@@ -12,16 +12,23 @@ from .throttling import client_network
 
 
 class ApiNoStoreMiddleware:
-	"""Keep API responses (login tokens, personal data) out of shared caches."""
+	"""Keep API and web responses (tokens, personal data) out of any cache.
+
+	The web namespace is matched by name: its pages sit at the URL root.
+	"""
 
 	prefix = '/api/'
+	namespace = 'web'
 
 	def __init__(self, get_response):
 		self.get_response = get_response
 
 	def __call__(self, request):
 		response = self.get_response(request)
-		if request.path_info.startswith(self.prefix):
+		match = getattr(request, 'resolver_match', None)
+		if request.path_info.startswith(self.prefix) or (
+			match is not None and self.namespace in match.namespaces
+		):
 			patch_cache_control(response, no_store=True, private=True)
 		return response
 

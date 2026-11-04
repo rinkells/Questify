@@ -94,3 +94,30 @@ def achievement_cards(user, *, unlocked_only=False):
             masked=False,
         ))
     return cards
+
+
+def next_achievement(user):
+    """The first visible achievement the user does not have yet, or None; one query.
+
+    "First" is catalog order: evaluators answer only yes or no, so how close an
+    achievement is cannot be measured yet. Hidden ones are never offered.
+    """
+    return achievements_for_user(user).filter(
+        is_unlocked=False,
+        is_hidden=False,
+    ).first()
+
+
+def achievement_names(achievement_ids):
+    """The names of these achievements, for telling the user they earned them.
+
+    Only pass ids the user has just unlocked: a hidden one's name is not masked.
+    One query, none without ids; in id order.
+    """
+    if not achievement_ids:
+        return []
+    return list(
+        Achievement.objects.filter(pk__in=achievement_ids).order_by(
+            'pk',
+        ).values_list('name', flat=True)
+    )

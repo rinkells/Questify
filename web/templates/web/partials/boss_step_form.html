@@ -1,0 +1,37 @@
+{# One form and one button for either way to add a step: the view refuses both and neither, next to the title. No "required": either input may stay empty. #}{% with values=card.step_values errors=card.step_errors prefix=card.field_prefix %}<form class="boss-card__attach" method="post" action="{% url 'web:boss-attach' boss.pk %}" hx-post="{% url 'web:boss-attach' boss.pk %}" hx-target="#boss-list" hx-swap="outerHTML" hx-sync="#boss-list:drop" hx-disabled-elt="find button">
+  {% csrf_token %}
+  {% if attachable %}
+  <div class="field">
+    <label class="field__label" for="{{ prefix }}_quest">Додати крок</label>
+    <select class="field__input" id="{{ prefix }}_quest" name="quest">
+      <option value="">Обери квест</option>
+      {% for quest in attachable %}<option value="{{ quest.pk }}"{% if quest.pk|stringformat:"d" == values.quest %} selected{% endif %}>{{ quest.title }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% include "web/partials/field.html" with name="title" label="Або новий крок" value=values.title maxlength=255 autocomplete="off" optional=True hint=new_step_hint field_errors=errors.title %}
+  {% else %}
+  <p class="boss-card__hint">Вільних разових квестів немає. <a class="link" href="{% url 'web:quest-new' %}?next={% url 'web:bosses' %}">Створити квест</a></p>
+  {% include "web/partials/field.html" with name="title" label="Новий крок" value=values.title maxlength=255 autocomplete="off" optional=True hint=new_step_hint field_errors=errors.title %}
+  {% endif %}
+  <details class="boss-card__more"{% if values.category or values.new_category or values.deadline %} open{% endif %}>
+    <summary class="boss-card__more-toggle">Категорія і дедлайн</summary>
+    <div class="boss-card__more-fields">
+      <div class="field{% if errors.category %} field--error{% endif %}">
+        <label class="field__label" for="{{ prefix }}_category">Категорія</label>
+        <select class="field__input" id="{{ prefix }}_category" name="category"{% if errors.category %} aria-invalid="true" aria-describedby="{{ prefix }}_category_error"{% endif %}>
+          <option value="">Без категорії</option>
+          {% for option in category_options %}<option value="{{ option.pk }}"{% if option.pk|stringformat:"d" == values.category %} selected{% endif %}>{{ option.name }}</option>
+          {% endfor %}
+        </select>
+        {% if errors.category %}<div class="field__error" id="{{ prefix }}_category_error">{% for error in errors.category %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+      </div>
+      {% include "web/partials/field.html" with name="new_category" label="Або нова категорія" value=values.new_category maxlength=100 autocomplete="off" optional=True field_errors=errors.new_category %}
+      {% include "web/partials/field.html" with name="deadline" label="Дедлайн" type="datetime-local" value=values.deadline optional=True hint="Час у твоєму часовому поясі." field_errors=errors.deadline %}
+    </div>
+  </details>
+  {% for error in errors.non_field_errors %}<div class="alert alert--error" role="alert">{{ error }}</div>{% endfor %}
+  <div class="boss-card__attach-actions">
+    <button class="btn btn--quiet btn--sm" type="submit" aria-label="Додати крок: {{ boss.title }}">Додати</button>
+  </div>
+</form>{% endwith %}

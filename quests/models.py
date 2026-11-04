@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator
 from django.db import models
 from django.db.models import Q
@@ -8,6 +9,31 @@ from core.models import StatType
 
 MAX_XP_REWARD = 1_000
 MAX_STAT_REWARD = 1_000_000
+# Typed interchangeably in Ukrainian names and alike on the screen, so they must
+# not make two names different. All become U+0027.
+APOSTROPHES = str.maketrans({'’': "'", 'ʼ': "'"})
+
+
+def category_key(name):
+	"""Normalize a category name for matching: trimmed, lowercased, one apostrophe.
+
+	Categories, achievements, skills and the skill requirement admin all match
+	through this key, so they agree with each other, and none of them repeats
+	the normalization. Category names are stored trimmed, so 'Study ' would
+	otherwise never match anything. Lowercasing is ``str.lower()`` rather than
+	``casefold()``, which would merge 'Straße' and 'STRASSE'.
+
+	``QuestCategory`` and ``SkillRequirement`` store it and are unique on the
+	stored value, so the database never applies its own, locale-dependent
+	``lower()``. A change here therefore takes a migration that recalculates
+	both, as quests/0016 and skills/0002 do.
+
+	Legacy completions whose category was never recorded keep ``None`` as
+	their key: they are neither uncategorized ('') nor in a named category.
+	"""
+	if name is None:
+		return None
+	return name.strip().lower().translate(APOSTROPHES)
 
 
 class QuestCategory(models.Model):
@@ -18,6 +44,46 @@ class QuestCategory(models.Model):
 	)
 	name = models.CharField(max_length=100)
 	icon = models.CharField(max_length=100, blank=True, null=True)
+	# category_key(name), written by clean() and save(), so the admin and the ORM
+	# set it too; QuerySet.update() and bulk_create() call neither and must set it
+	# themselves. Lowercasing 'İ' yields two code points, hence the larger max_length.
+	category_key = models.CharField(
+		max_length=200,
+		blank=True,
+		default='',
+		editable=False,
+	)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(
+				fields=('user', 'category_key'),
+				name='unique_user_category_key',
+			),
+		]
+
+	def clean(self):
+		super().clean()
+		# The key is not a form field, so a form skips the constraint, and without
+		# this check the admin would answer a duplicate with a 500.
+		self.category_key = category_key(self.name)
+		if QuestCategory.objects.filter(
+			user_id=self.user_id,
+			category_key=self.category_key,
+		).exclude(pk=self.pk).exists():
+			raise ValidationError({
+				'name': (
+					'This user already has a category with this name '
+					'(case and apostrophes are ignored).'
+				),
+			})
+
+	def save(self, *args, **kwargs):
+		self.category_key = category_key(self.name)
+		update_fields = kwargs.get('update_fields')
+		if update_fields is not None and 'name' in update_fields:
+			kwargs['update_fields'] = {*update_fields, 'category_key'}
+		super().save(*args, **kwargs)
 
 	def __str__(self):
 		return self.name

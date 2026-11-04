@@ -1,0 +1,14 @@
+{# The whole tree, replaced at once after an action: unlocking changes the children and a refusal may mean the parent changed. #}
+<div class="skill-browser" id="skill-tree">
+  {% if tree_error %}<div class="alert alert--error" role="alert">{{ tree_error }}</div>{% endif %}
+  {% if tree %}
+  <p class="subtitle">Відкрито {{ skills_unlocked }} з {{ skills_total }}</p>
+  <ul class="skill-tree">
+    {% for node in tree %}{% include "web/partials/skill_node.html" %}{% endfor %}
+  </ul>
+  {% else %}
+  <div class="card card--compact">
+    <p>Поки немає навичок, які можна відкрити.</p>
+  </div>
+  {% endif %}
+</div>

@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import timedelta
 from io import StringIO
 from unittest.mock import Mock
@@ -25,6 +26,7 @@ from wallet.models import WalletTransaction
 
 from .admin import BossAdmin, BossDefeatAdmin
 from .models import Boss, BossDefeat, BossStep
+from .services import BossService, BossStepError
 
 
 User = get_user_model()
@@ -239,6 +241,33 @@ def test_completing_a_step_takes_three_character_locks(user):
         complete(user, quests[0])
 
     assert len(character_locks(queries)) == 3
+
+
+@pytest.mark.django_db
+def test_completing_a_new_step_takes_three_character_locks(user):
+    boss = BossService.create_boss(user, title='Dragon')
+    step = BossService.add_new_step(user, boss.pk, {'title': 'Sword'})
+
+    with CaptureQueriesContext(connection) as queries:
+        result = complete(user, step.quest)
+
+    assert result['boss']['hp'] == 0
+    assert len(character_locks(queries)) == 3
+
+
+@pytest.mark.django_db
+def test_new_steps_beat_a_boss_like_any_other(user):
+    boss = BossService.create_boss_with_steps(
+        user,
+        new_steps=[{'title': f'Step {index}'} for index in range(3)],
+        title='Dragon',
+    )
+    quests = [step.quest for step in boss.steps.order_by('pk')]
+
+    results = complete_all(user, quests)
+
+    assert results[-1]['boss']['defeated'] == {'xp': 75, 'coins': 75}
+    assert BossDefeat.objects.get(boss=boss).xp_awarded == 75
 
 
 @pytest.mark.django_db
@@ -532,6 +561,132 @@ def test_parallel_completions_of_the_last_steps_defeat_the_boss_once(user):
     assert_ledger_matches(user)
 
 
+MIN_STEPS_TEXT = 'A boss must keep at least 3 steps.'
+
+
+@pytest.mark.django_db
+def test_the_api_refuses_to_detach_a_step_too_few_would_be_left_without(api_client, user):
+    boss, quests = make_boss(user)
+
+    response = detach(api_client, boss, quests[0])
+
+    assert response.status_code == 400
+    assert response.data == {'detail': MIN_STEPS_TEXT}
+    assert BossStep.objects.filter(boss=boss).count() == 3
+
+
+@pytest.mark.django_db
+def test_the_api_lets_a_step_go_while_enough_are_left(api_client, user):
+    boss, quests = make_boss(user, steps=4)
+
+    assert detach(api_client, boss, quests[0]).status_code == 204
+
+    assert get_boss(api_client, boss).data['max_hp'] == 3
+    assert detach(api_client, boss, quests[1]).status_code == 400
+
+
+@pytest.mark.django_db
+def test_the_api_lets_a_step_that_does_not_count_go_even_at_the_minimum(api_client, user):
+    boss, quests = make_boss(user, steps=4)
+    assert api_client.delete(f'/api/quests/{quests[3].id}/').status_code == 204
+
+    assert detach(api_client, boss, quests[3]).status_code == 204
+
+    data = get_boss(api_client, boss).data
+    assert (data['max_hp'], len(data['steps'])) == (3, 3)
+
+
+@pytest.mark.django_db
+def test_the_api_keeps_the_one_step_of_an_old_boss(api_client, user):
+    boss, (quest,) = make_boss(user, steps=1)
+
+    response = detach(api_client, boss, quest)
+
+    assert (response.status_code, response.data) == (400, {'detail': MIN_STEPS_TEXT})
+    assert BossStep.objects.filter(boss=boss).exists()
+
+
+@pytest.mark.django_db
+def test_a_foreign_boss_at_the_minimum_is_a_404_not_the_refusal(api_client, other_user):
+    boss, quests = make_boss(other_user)
+
+    response = detach(api_client, boss, quests[0])
+
+    assert response.status_code == 404
+    assert MIN_STEPS_TEXT not in str(response.data)
+    assert BossStep.objects.filter(boss=boss).count() == 3
+
+
+def wait_for_blocked_backends(count):
+    """Until this many connections wait for a lock; ``pg_locks`` is read live."""
+    deadline = time.monotonic() + 15
+    with connection.cursor() as cursor:
+        while time.monotonic() < deadline:
+            cursor.execute('SELECT count(*) FROM pg_locks WHERE NOT granted')
+            if cursor.fetchone()[0] >= count:
+                return
+            time.sleep(0.02)
+    raise AssertionError(f'{count} connections never blocked')
+
+
+@pytest.mark.django_db(transaction=True)
+def test_parallel_detaches_cannot_leave_fewer_than_the_minimum(user):
+    boss, quests = make_boss(user, steps=4)
+    outcomes = []
+
+    def run(quest):
+        try:
+            BossService.detach_step(user, boss.pk, quest.pk)
+            outcomes.append('detached')
+        except BossStepError as refusal:
+            outcomes.append(refusal.code)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=run, args=(quest,)) for quest in quests[:2]]
+    # Both get as far as the character row this holds, each with its own quest
+    # locked. Whatever they read before it, they read with all four steps there.
+    with transaction.atomic():
+        Character.locked_for_user_id(user.pk)
+        for thread in threads:
+            thread.start()
+        wait_for_blocked_backends(2)
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == ['boss_min_steps', 'detached']
+    assert BossStep.objects.filter(boss=boss).count() == 3
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(QUESTIFY_MAX_BOSS_STEPS=1)
+def test_parallel_new_steps_cannot_pass_the_step_limit_or_leave_a_quest(user):
+    boss = Boss.objects.create(user=user, title='Dragon')
+    outcomes = []
+
+    def run(title):
+        try:
+            BossService.add_new_step(user, boss.pk, {'title': title})
+            outcomes.append('added')
+        except BossStepError as refusal:
+            outcomes.append(refusal.code)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=run, args=(title,)) for title in ('One', 'Two')]
+    with transaction.atomic():
+        Character.locked_for_user_id(user.pk)
+        for thread in threads:
+            thread.start()
+        wait_for_blocked_backends(2)
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == ['added', 'boss_steps_full']
+    assert BossStep.objects.filter(boss=boss).count() == 1
+    assert Quest.objects.filter(user=user).count() == 1
+
+
 # --- The 24-hour cap ---------------------------------------------------------
 
 
@@ -821,7 +976,7 @@ def test_seed_achievements_creates_the_boss_achievement_once():
     for _ in range(2):
         call_command('seed_achievements', stdout=StringIO())
 
-    achievement = Achievement.objects.get(name='Boss Slayer')
+    achievement = Achievement.objects.get(name='Переможець босів')
     assert achievement.condition_type == 'bosses_defeated_count'
     assert achievement.condition_config == {'threshold': 1}
 

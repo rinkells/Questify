@@ -1,0 +1,38 @@
+{% load web_extras %}{% with reward=card.reward %}{# With a token the card asks for confirmation; that form is the only one that spends coins. autofocus is what htmx moves the focus to after a swap, since the button pressed is usually gone. #}<article class="reward-card{% if not reward.is_active %} reward-card--off{% endif %}">
+  <div class="reward-card__head">
+    <div class="reward-card__title" tabindex="-1"{% if card.acted_on or card.token %} autofocus{% endif %}>{{ reward.title }}</div>
+    <span class="tag tag--xp reward-card__cost">{{ reward.cost }} {{ reward.cost|uk_plural:"монета,монети,монет" }}</span>
+  </div>
+  {% if reward.description %}<p class="reward-card__text">{{ reward.description }}</p>{% endif %}
+  {% if card.token %}
+  <div class="reward-confirm">
+    <p class="reward-confirm__question">Отримати «{{ reward.title }}» за {{ reward.cost }} {{ reward.cost|uk_plural:"монету,монети,монет" }}? На балансі залишиться {{ card.balance_after }}.</p>
+    <div class="reward-card__actions">
+      <form class="reward-card__form" method="post" action="{% url 'web:reward-redeem' reward.pk %}" hx-post="{% url 'web:reward-redeem' reward.pk %}" hx-target="#reward-browser" hx-swap="outerHTML" hx-sync="this:drop" hx-disabled-elt="find button">
+        {% csrf_token %}
+        <input type="hidden" name="form_token" value="{{ card.token }}">
+        <button class="btn btn--primary btn--sm" type="submit">Підтвердити</button>
+      </form>
+      <a class="btn btn--quiet btn--sm" href="{% url 'web:rewards' %}" hx-get="{% url 'web:reward-card' reward.pk %}" hx-target="closest .reward-card" hx-swap="outerHTML" hx-sync="this:drop">Скасувати</a>
+    </div>
+  </div>
+  {% else %}
+  <div class="reward-card__actions">
+    {% if card.can_redeem %}
+    <a class="btn btn--primary btn--sm" href="{% url 'web:reward-redeem' reward.pk %}" hx-get="{% url 'web:reward-redeem' reward.pk %}" hx-target="closest .reward-card" hx-swap="outerHTML" hx-sync="this:drop" hx-disabled-elt="this" aria-label="Отримати: {{ reward.title }}">Отримати</a>
+    {% elif reward.is_active %}
+    <button class="btn btn--primary btn--sm btn--unavailable" type="button" disabled aria-label="Отримати: {{ reward.title }}" aria-describedby="reward-{{ reward.pk }}-hint">Отримати</button>
+    {% else %}
+    <span class="tag">Вимкнено</span>
+    {% endif %}
+    <a class="btn btn--quiet btn--sm" href="{% url 'web:reward-edit' reward.pk %}" aria-label="Змінити: {{ reward.title }}">Змінити</a>
+    <form class="reward-card__form" method="post" action="{% url 'web:reward-archive' reward.pk %}" hx-post="{% url 'web:reward-archive' reward.pk %}" hx-target="#reward-browser" hx-swap="outerHTML" hx-sync="this:drop" hx-disabled-elt="find button" hx-confirm="Перенести нагороду в архів? Повернути її звідти не можна.">
+      {% csrf_token %}
+      <button class="btn btn--quiet btn--sm" type="submit" aria-label="В архів: {{ reward.title }}">В архів</button>
+    </form>
+  </div>
+  {% if reward.is_active and card.shortfall %}<p class="reward-card__hint" id="reward-{{ reward.pk }}-hint">Не вистачає {{ card.shortfall }} {{ card.shortfall|uk_plural:"монети,монет,монет" }}</p>{% endif %}
+  {% endif %}
+  {% if card.error %}<div class="alert alert--error" role="alert">{{ card.error }}</div>{% endif %}
+  {% if card.notice %}<div class="alert alert--info" role="status">{{ card.notice }}</div>{% endif %}
+</article>{% endwith %}

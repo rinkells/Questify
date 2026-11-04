@@ -1,0 +1,43 @@
+{% extends "web/base.html" %}
+{% block title %}Ачівки{% endblock %}
+{% block content %}
+<main class="layout__main">
+  <section class="section">
+    <h1 class="title">Ачівки</h1>
+    {% if cards %}
+    <div class="achievement-count">
+      <p class="achievement-count__text">Відкрито {{ achievements_unlocked }} з {{ achievements_total }}</p>
+      <progress class="progress" value="{{ achievements_unlocked }}" max="{{ achievements_total }}" aria-label="Відкриті ачівки"></progress>
+    </div>
+    <ul class="achievement-grid">
+      {% for card in cards %}
+      <li class="achievement-card{% if card.unlocked %} achievement-card--earned{% elif card.masked %} achievement-card--masked{% endif %}">
+        <div class="achievement-card__icon">
+          {% if card.masked %}
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.3-1.5 2.4"/><path d="M12 18h.01"/></svg>
+          {% else %}
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4h8v7a4 4 0 0 1-8 0z"/><path d="M8 6H5v2a3 3 0 0 0 3 3"/><path d="M16 6h3v2a3 3 0 0 1-3 3"/><path d="M12 15v5"/><path d="M8 20h8"/></svg>
+          {% endif %}
+        </div>
+        <div class="achievement-card__body">
+          <div class="achievement-card__name">{{ card.name }}</div>
+          {% if card.masked %}
+          <p class="achievement-card__text">Прихована ачівка. Дізнаєшся, коли отримаєш.</p>
+          {% elif card.description %}
+          <p class="achievement-card__text">{{ card.description }}</p>
+          {% endif %}
+          {% if card.unlocked %}
+          <p class="achievement-card__date">Отримано <time datetime="{{ card.unlocked_at|date:'c' }}">{{ card.unlocked_at|date:"j E Y" }}</time></p>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="card card--compact">
+      <p>Поки немає ачівок, які можна отримати.</p>
+    </div>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

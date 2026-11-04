@@ -1,0 +1,3 @@
+{# One page of rows. "Show more" sits inside the list and is replaced by the next page, so the rows land right after the ones already there; the address stays that of the filters. #}
+{% for item in page.items %}{% include "web/partials/quest_row.html" %}{% endfor %}
+{% if more_url %}<div class="quest-list__more" id="quests-more" role="listitem"><a class="btn btn--quiet btn--sm" href="{{ more_url }}" hx-boost="true" hx-target="#quests-more" hx-swap="outerHTML show:none" hx-push-url="false" hx-sync="this:drop" hx-disabled-elt="this">Показати ще</a></div>{% endif %}

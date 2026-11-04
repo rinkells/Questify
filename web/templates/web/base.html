@@ -1,0 +1,57 @@
+{% load static web_extras %}<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Questify{% endblock %} · Questify</title>
+  {# No history snapshots: a restored one could show another moment's balance. historyEnabled stays on, or hx-push-url would not change the address (htmx calls pushState only with it); with no snapshot to restore, Back reloads the page from the server. A 4xx is swapped, so an error lands in its fragment; a 5xx is not. #}
+  <meta name="htmx-config" content='{"historyEnabled":true,"historyCacheSize":0,"refreshOnHistoryMiss":true,"selfRequestsOnly":true,"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"4..","swap":true,"error":true},{"code":"5..","swap":false,"error":true},{"code":"...","swap":false}]}'>
+  <link rel="stylesheet" href="{% static 'web/css/questify.css' %}">
+  <script src="{% static 'web/js/boot.js' %}"></script>
+  <script src="{% static 'web/vendor/htmx/htmx.min.js' %}" defer></script>
+  <script src="{% static 'web/js/app.js' %}" defer></script>
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="brand" href="{% url 'web:today' %}">
+        <span class="brand__mark">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+        </span>
+        <span class="brand__name">Questify</span>
+      </a>
+      {% if user.is_authenticated %}
+      {% nav_items as items %}
+      <nav class="nav" id="site-nav" aria-label="Основна навігація">
+        {% for item in items %}
+        <a class="nav__link{% if item.active %} nav__link--active{% endif %}" href="{{ item.url }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.label }}</a>
+        {% endfor %}
+      </nav>
+      <div class="site-header__right">
+        <div class="user">
+          {% include "web/partials/coins_chip.html" %}
+          <span class="avatar" aria-hidden="true">{{ user|initials }}</span>
+          <span class="user__name">{{ user|display_name }}</span>
+        </div>
+        <form class="logout" method="post" action="{% url 'web:logout' %}">
+          {% csrf_token %}
+          <button class="btn btn--quiet btn--sm" type="submit">Вийти</button>
+        </form>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-controls="site-nav" aria-expanded="false" aria-label="Меню">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+      {% endif %}
+    </div>
+  </header>
+
+  {% block page %}
+  <div class="page">
+    {% include "web/partials/messages.html" %}
+    {% block content %}{% endblock %}
+  </div>
+  {% endblock %}
+
+  <div class="toasts" id="toasts" role="status" aria-live="polite" data-failure-text="Щось пішло не так. Спробуй ще раз."></div>
+</body>
+</html>

@@ -1,0 +1,1 @@
+{% load web_extras %}<a class="chip chip--link{% if chip.active %} chip--active{% endif %}" id="{{ chip.id }}" href="{{ chip.url }}"{% if chip.active %} aria-current="true"{% endif %}>{% if chip.dot_of %}<span class="dot dot--{{ chip.dot_of|category_color }}"></span>{% endif %}<span class="chip__text">{{ chip.label }}</span></a>
