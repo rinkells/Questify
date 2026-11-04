@@ -1,0 +1,13 @@
+{% extends "web/base.html" %}
+{% block title %}Усі квести{% endblock %}
+{% block content %}
+<main class="layout__main">
+  <section class="section">
+    <div class="section__head">
+      <h1 class="title">Усі квести</h1>
+      {% include "web/partials/new_quest_button.html" %}
+    </div>
+    {% include "web/partials/quest_browser.html" %}
+  </section>
+</main>
+{% endblock %}

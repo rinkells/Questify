@@ -56,7 +56,7 @@ class SkillRequirementFormSet(BaseInlineFormSet):
         if len(keys) != len(set(keys.values())):
             raise ValidationError(
                 'A skill cannot have two requirements of the same type '
-                'for the same category (case is ignored).'
+                'for the same category (case and apostrophes are ignored).'
             )
 
 

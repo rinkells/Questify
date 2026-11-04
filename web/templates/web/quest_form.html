@@ -1,0 +1,74 @@
+{% extends "web/base.html" %}
+{% load web_extras %}
+{% block title %}{{ form_title }}{% endblock %}
+{% block content %}
+<main class="form-page">
+  <section class="card">
+    <h1 class="title">{{ form_title }}</h1>
+    {% if page_error %}<div class="alert alert--error" role="alert">{{ page_error }}</div>{% endif %}
+    <form class="form" method="post" action="{% if quest %}{% url 'web:quest-edit' quest.pk %}{% else %}{% url 'web:quest-new' %}{% endif %}">
+      {% csrf_token %}
+      {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
+
+      {% include "web/partials/field.html" with name="title" label="Назва" value=values.title maxlength=255 autocomplete="off" field_errors=errors.title %}
+
+      <div class="form__row">
+        <div class="field{% if errors.category %} field--error{% endif %}">
+          <label class="field__label" for="id_category">Категорія</label>
+          <select class="field__input" id="id_category" name="category"{% if errors.category %} aria-invalid="true" aria-describedby="id_category_error"{% endif %}>
+            <option value="">Без категорії</option>
+            {% for option in category_options %}<option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          {% if errors.category %}<div class="field__error" id="id_category_error">{% for error in errors.category %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+        </div>
+        {% include "web/partials/field.html" with name="new_category" label="Або нова категорія" value=values.new_category maxlength=100 autocomplete="off" optional=True hint="Якщо заповнити, квест піде до неї." field_errors=errors.new_category %}
+      </div>
+
+      <fieldset class="field field--group{% if errors.quest_type %} field--error{% endif %}">
+        <legend class="field__label">Тип і нагорода</legend>
+        {% if type_locked %}
+        <p class="choice-fixed">{{ quest.quest_type|quest_type_label }} <span class="tag tag--xp">{{ quest.xp_reward }} XP</span></p>
+        <div class="field__hint">Тип не можна змінити після першого виконання.</div>
+        {% else %}
+        <div class="choices">
+          {% for option in type_options %}
+          <label class="choice">
+            <input class="choice__input" type="radio" name="quest_type" value="{{ option.value }}"{% if option.checked %} checked{% endif %}>
+            <span class="choice__label">{{ option.label }}</span>
+            <span class="tag tag--xp">{{ option.xp }} XP</span>
+          </label>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if errors.quest_type %}<div class="field__error">{% for error in errors.quest_type %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+      </fieldset>
+
+      {% if deadline_locked %}
+      {% include "web/partials/field.html" with name="deadline" label="Дедлайн" type="datetime-local" value=values.deadline optional=True readonly=True hint="Дедлайн минув, його не можна змінити." field_errors=errors.deadline %}
+      {% else %}
+      {% include "web/partials/field.html" with name="deadline" label="Дедлайн" type="datetime-local" value=values.deadline optional=True hint="Необов’язково. Час у твоєму часовому поясі." field_errors=errors.deadline %}
+      {% endif %}
+
+      {% if quest %}
+      <div class="field">
+        {# The hidden value comes first: an unchecked box posts only it, a checked one posts its own after it, and the last value wins. #}
+        <input type="hidden" name="is_active" value="false">
+        <label class="choice choice--plain">
+          <input class="choice__input" type="checkbox" name="is_active" value="true"{% if values.is_active %} checked{% endif %}>
+          <span class="choice__label">Квест активний</span>
+        </label>
+        <div class="field__hint">Вимкнений квест не з’являється на екрані «Сьогодні», і його не можна виконати.</div>
+      </div>
+      {% endif %}
+
+      {% for error in errors.non_field_errors %}<div class="alert alert--error" role="alert">{{ error }}</div>{% endfor %}
+
+      <div class="form__actions">
+        <button class="btn btn--primary" type="submit">{% if quest %}Зберегти{% else %}Створити квест{% endif %}</button>
+        <a class="btn btn--quiet" href="{{ back_url }}">Скасувати</a>
+      </div>
+    </form>
+  </section>
+</main>
+{% endblock %}

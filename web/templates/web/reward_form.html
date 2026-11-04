@@ -1,0 +1,42 @@
+{% extends "web/base.html" %}
+{% block title %}{{ form_title }}{% endblock %}
+{% block content %}
+<main class="form-page">
+  <section class="card">
+    <h1 class="title">{{ form_title }}</h1>
+    {% if page_error %}<div class="alert alert--error" role="alert">{{ page_error }}</div>{% endif %}
+    <form class="form" method="post" action="{% if reward %}{% url 'web:reward-edit' reward.pk %}{% else %}{% url 'web:reward-new' %}{% endif %}">
+      {% csrf_token %}
+
+      {% include "web/partials/field.html" with name="title" label="Назва" value=values.title maxlength=255 autocomplete="off" field_errors=errors.title %}
+
+      <div class="field{% if errors.description %} field--error{% endif %}">
+        <label class="field__label" for="id_description">Опис</label>
+        <textarea class="field__input field__input--area" id="id_description" name="description" rows="3" maxlength="{{ max_description }}"{% if errors.description %} aria-invalid="true" aria-describedby="id_description_error"{% endif %}>{{ values.description }}</textarea>
+        {% if errors.description %}<div class="field__error" id="id_description_error">{% for error in errors.description %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+      </div>
+
+      {% include "web/partials/field.html" with name="cost" label="Ціна в монетах" type="number" value=values.cost min=1 max=max_cost hint="Монети приходять разом із XP: одна монета за кожен XP." field_errors=errors.cost %}
+
+      {% if reward %}
+      <div class="field">
+        {# The hidden value comes first: an unchecked box posts only it, a checked one posts its own after it, and the last value wins. #}
+        <input type="hidden" name="is_active" value="false">
+        <label class="choice choice--plain">
+          <input class="choice__input" type="checkbox" name="is_active" value="true"{% if values.is_active %} checked{% endif %}>
+          <span class="choice__label">Нагорода активна</span>
+        </label>
+        <div class="field__hint">Вимкнену нагороду не можна отримати, доки її не ввімкнеш знову.</div>
+      </div>
+      {% endif %}
+
+      {% for error in errors.non_field_errors %}<div class="alert alert--error" role="alert">{{ error }}</div>{% endfor %}
+
+      <div class="form__actions">
+        <button class="btn btn--primary" type="submit">{% if reward %}Зберегти{% else %}Створити нагороду{% endif %}</button>
+        <a class="btn btn--quiet" href="{% url 'web:rewards' %}">Скасувати</a>
+      </div>
+    </form>
+  </section>
+</main>
+{% endblock %}

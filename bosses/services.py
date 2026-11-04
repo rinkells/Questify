@@ -5,16 +5,17 @@ from django.utils import timezone
 from core.errors import ConflictError, DomainError
 from core.models import Character
 from quests.models import MAX_XP_REWARD, Quest, QuestCompletion
+from quests.services import QuestService
 
-from .models import Boss, BossDefeat, BossStep
+from .models import Boss, BossDefeat, BossStep, live_steps
 
 
 class BossStepError(DomainError):
     """A step the rules refuse (400); the message is shown to the client.
 
     Codes: ``quest_not_found``, ``quest_not_one_time``, ``quest_inactive``,
-    ``quest_deadline_passed``, ``quest_already_done``, ``quest_already_step``
-    and ``boss_steps_full``.
+    ``quest_deadline_passed``, ``quest_already_done``, ``quest_already_step``,
+    ``boss_steps_full`` and ``boss_min_steps`` (param ``minimum``).
     """
 
     code = 'step_refused'
@@ -66,11 +67,38 @@ def _locked_boss(user, boss_id):
     return boss
 
 
+def _refuse_if_defeated(boss):
+    if BossDefeat.objects.filter(boss=boss).exists():
+        raise BossConflictError(
+            'This boss has been defeated; its steps cannot change.',
+            code='boss_defeated',
+        )
+
+
 def _completed(quest_id):
     return QuestCompletion.objects.filter(
         quest_id=quest_id,
         status=QuestCompletion.CompletionStatus.COMPLETED,
     )
+
+
+def _check_live_steps_stay(boss, step):
+    """Refuse to detach a step that counts if too few such steps would be left.
+
+    A step that does not count changes nothing, so it can always go, also from a
+    boss already below the minimum. The steps are read under the character lock the
+    caller holds, so parallel detachings see each other's result.
+    """
+    live = set(
+        BossStep.objects.filter(live_steps(), boss=boss).values_list('pk', flat=True),
+    )
+    minimum = settings.QUESTIFY_BOSS_MIN_STEPS
+    if step.pk in live and len(live) - 1 < minimum:
+        raise BossStepError(
+            f'A boss must keep at least {minimum} steps.',
+            code='boss_min_steps',
+            minimum=minimum,
+        )
 
 
 class BossService:
@@ -96,11 +124,7 @@ class BossService:
         # After the lock, as in complete_quest.
         now = timezone.now()
         boss = _locked_boss(user, boss_id)
-        if BossDefeat.objects.filter(boss=boss).exists():
-            raise BossConflictError(
-                'This boss has been defeated; its steps cannot change.',
-                code='boss_defeated',
-            )
+        _refuse_if_defeated(boss)
         if quest is None or quest.archived_at is not None:
             raise BossStepError('Quest not found.', code='quest_not_found')
         if quest.quest_type != Quest.QuestType.ONE_TIME:
@@ -141,30 +165,56 @@ class BossService:
 
     @staticmethod
     @transaction.atomic
+    def add_new_step(user, boss_id, quest_data):
+        """Create a one-time quest and make it a step of the boss, all or nothing.
+
+        ``quest_data`` is what ``QuestService.create_quest`` takes (validated
+        fields and ``new_category``), whatever type it names: a step is one-time.
+        A quota or a rule that refuses takes the quest and any category it
+        brought back with it.
+
+        There is no quest to lock before the character: quest quotas are checked
+        under that lock, and the new row is out of everyone's reach until the
+        commit. The boss comes before the quest, so a foreign, archived or defeated
+        boss answers as such also for a user out of quests.
+        """
+        Character.locked_for_user_id(user.pk)
+        _refuse_if_defeated(_locked_boss(user, boss_id))
+        quest = QuestService.create_quest(
+            user,
+            **{**quest_data, 'quest_type': Quest.QuestType.ONE_TIME},
+        )
+        return BossService.attach_step(user, boss_id, quest.pk)
+
+    @staticmethod
+    @transaction.atomic
     def detach_step(user, boss_id, quest_id):
         """Remove a step whose quest has no completed row.
 
         A failed or archived step can be detached; that is how a failed step
         stops blocking its boss. A completed one stays, as the boss's reward
-        counts it.
+        counts it, and so does a step that counts when fewer than
+        QUESTIFY_BOSS_MIN_STEPS such steps would be left (``boss_min_steps``).
+        Returns the quest, which is a step no longer.
         """
-        Quest.objects.select_for_update().filter(pk=quest_id, user=user).first()
+        quest = Quest.objects.select_for_update().filter(
+            pk=quest_id,
+            user=user,
+        ).first()
         Character.locked_for_user_id(user.pk)
         boss = _locked_boss(user, boss_id)
         step = BossStep.objects.filter(boss=boss, quest_id=quest_id).first()
         if step is None:
             raise BossStep.DoesNotExist
-        if BossDefeat.objects.filter(boss=boss).exists():
-            raise BossConflictError(
-                'This boss has been defeated; its steps cannot change.',
-                code='boss_defeated',
-            )
+        _refuse_if_defeated(boss)
         if _completed(quest_id).exists():
             raise BossConflictError(
                 'A completed step cannot be detached.',
                 code='step_completed',
             )
+        _check_live_steps_stay(boss, step)
         step.delete()
+        return quest
 
     @staticmethod
     @transaction.atomic
@@ -211,6 +261,38 @@ class BossService:
                 code='active_boss_limit_reached',
             )
         return Boss.objects.create(user=user, **fields)
+
+    @staticmethod
+    @transaction.atomic
+    def create_boss_with_steps(user, *, quest_ids=(), new_steps=(), **fields):
+        """Create a boss with these quests and new steps, all or nothing.
+
+        ``new_steps`` is a ``quest_data`` for ``add_new_step`` per step. A quest
+        or new step refused takes the new boss and every quest created for it
+        back with it. The quests are locked before ``create_boss`` takes the
+        character, in id order: creating first would lock the character before
+        the quests, the opposite of complete_quest, and two creations could
+        otherwise wait for each other's quests. New steps need no such lock.
+        """
+        quest_ids = sorted(set(quest_ids))
+        if len(quest_ids) + len(new_steps) > settings.QUESTIFY_MAX_BOSS_STEPS:
+            raise BossStepError(
+                'This boss already has the most steps allowed.',
+                code='boss_steps_full',
+                limit=settings.QUESTIFY_MAX_BOSS_STEPS,
+            )
+        list(
+            Quest.objects.select_for_update().filter(
+                pk__in=quest_ids,
+                user=user,
+            ).order_by('pk').values_list('pk', flat=True)
+        )
+        boss = BossService.create_boss(user, **fields)
+        for quest_id in quest_ids:
+            BossService.attach_step(user, boss.pk, quest_id)
+        for quest_data in new_steps:
+            BossService.add_new_step(user, boss.pk, quest_data)
+        return boss
 
     @staticmethod
     @transaction.atomic

@@ -43,6 +43,9 @@ class AtomicThrottleMixin:
 	# When the cache backend is unreachable, general API throttles let requests
 	# through (the API stays up) while brute-force-sensitive scopes deny them.
 	fail_open = True
+	# Set when a counter could not be reached, so a caller that fails closed can
+	# tell an outage from a client over its budget.
+	cache_failed = False
 
 	def get_ident(self, request):
 		return client_network(super().get_ident(request))
@@ -52,6 +55,7 @@ class AtomicThrottleMixin:
 			return self._increment_counter(key, timeout or self.duration)
 		except RedisError:
 			logger.exception('Throttle cache unavailable for %s', type(self).__name__)
+			self.cache_failed = True
 			return 0 if self.fail_open else float('inf')
 
 	def _increment_counter(self, key, timeout):
@@ -185,6 +189,7 @@ class AtomicScopedRateThrottle(AtomicThrottleMixin, ScopedRateThrottle):
 				return
 		except RedisError:
 			logger.exception('Throttle cache unavailable for login networks')
+			self.cache_failed = True
 			self._blocked_keys.append(count_key)
 			return
 		if self._increment(count_key, timeout=window) > max_networks:

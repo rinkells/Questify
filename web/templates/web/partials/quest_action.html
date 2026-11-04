@@ -1,0 +1,9 @@
+{# The answer to an action on a quest: the row, then the rest of the screen out of band. #}
+{% include "web/partials/quest_row.html" %}
+{% include "web/partials/coins_chip.html" with oob=True %}
+{% include "web/partials/character_card.html" with oob=True %}
+{% include "web/partials/daily_bonus.html" with oob=True %}
+{% include "web/partials/today_summary.html" with oob=True %}
+{% include "web/partials/today_more.html" with oob=True %}
+{% include "web/partials/today_aside.html" with oob=True %}
+{% include "web/partials/toasts.html" %}

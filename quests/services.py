@@ -19,6 +19,7 @@ from .models import (
 	QuestCategory,
 	QuestCompletion,
 	Streak,
+	category_key,
 )
 from .xp_cap import xp_left_in_24h
 
@@ -52,8 +53,8 @@ class QuestInputError(DomainError):
     """A create, update or delete the rules refuse (400).
 
     ``field`` names the input, or is None for the whole request. Codes:
-    ``quest_limit_reached``, ``category_limit_reached``, ``category_gone``,
-    ``deadline_locked`` and ``quest_type_locked``.
+    ``quest_limit_reached``, ``category_limit_reached``, ``category_exists``,
+    ``category_gone``, ``deadline_locked`` and ``quest_type_locked``.
     """
 
 
@@ -453,12 +454,16 @@ class QuestService:
 
     @staticmethod
     @transaction.atomic
-    def create_quest(user, **fields):
+    def create_quest(user, *, new_category=None, **fields):
         """Create a quest with the server's reward, within the user's quota.
 
         ``fields`` are the validated inputs (``QUEST_FIELDS``; ``title`` and
         ``quest_type`` are required) and ``category`` is a category of the
         user's. Archived quests count toward the quota.
+
+        ``new_category`` is a validated category name that replaces
+        ``category`` (see ``CategoryService.get_or_create_named``). A category
+        created for a quest that is then refused goes back with it.
         """
         _check_fields(fields, QUEST_FIELDS)
         Character.locked_for_user_id(user.pk)
@@ -469,6 +474,11 @@ class QuestService:
                 'Quest limit reached for this account.',
                 code='quest_limit_reached',
             )
+        if new_category is not None:
+            fields['category'] = CategoryService.get_or_create_named(
+                user,
+                new_category,
+            )
         QuestService._lock_category(user, fields.get('category'))
         return Quest.objects.create(
             user=user,
@@ -478,11 +488,12 @@ class QuestService:
 
     @staticmethod
     @transaction.atomic
-    def update_quest(user, quest_id, **fields):
+    def update_quest(user, quest_id, *, new_category=None, **fields):
         """Change an unarchived quest of the user's; returns it.
 
         The reward follows a change of type, which is refused once the quest
         has a completion. A deadline that has passed cannot be changed.
+        ``new_category`` works as in ``create_quest``.
         Raises ``NotFoundError`` for an archived or foreign quest.
         """
         _check_fields(fields, QUEST_FIELDS)
@@ -497,6 +508,13 @@ class QuestService:
                 'The deadline has passed and cannot be changed.',
                 code='deadline_locked',
                 field='deadline',
+            )
+        if new_category is not None:
+            # After the quest row: complete_quest locks the quest and then the
+            # character, and the opposite order can deadlock against it.
+            fields['category'] = CategoryService.get_or_create_named(
+                user,
+                new_category,
             )
         QuestService._lock_category(user, fields.get('category'))
         new_type = fields.get('quest_type', quest.quest_type)
@@ -536,10 +554,28 @@ def _live_quests(user):
 
 class CategoryService:
     @staticmethod
+    def _refuse_a_taken_name(user, name, *, except_id=None):
+        """Call under the character lock, which every write here takes.
+
+        The database's constraint stays as the last word for what skips the
+        service; this is what turns a duplicate into a refusal, not a 500.
+        """
+        if QuestCategory.objects.filter(
+            user=user,
+            category_key=category_key(name),
+        ).exclude(pk=except_id).exists():
+            raise QuestInputError(
+                'You already have a category with this name.',
+                code='category_exists',
+                field='name',
+            )
+
+    @staticmethod
     @transaction.atomic
     def create_category(user, **fields):
         _check_fields(fields, CATEGORY_FIELDS)
         Character.locked_for_user_id(user.pk)
+        CategoryService._refuse_a_taken_name(user, fields['name'])
         if QuestCategory.objects.filter(user=user).count() >= (
             settings.QUESTIFY_MAX_CATEGORIES_PER_USER
         ):
@@ -551,14 +587,43 @@ class CategoryService:
 
     @staticmethod
     @transaction.atomic
+    def get_or_create_named(user, name):
+        """The user's category with this name, or a new one within the quota.
+
+        Names are compared by the stored ``category_key``, so 'Study' and
+        ' study ' are one category, and "Здоров'я" and "Здоров’я" too. The
+        character lock keeps two parallel requests from both creating it.
+        """
+        Character.locked_for_user_id(user.pk)
+        category = QuestCategory.objects.filter(
+            user=user,
+            category_key=category_key(name),
+        ).first()
+        if category is not None:
+            return category
+        return CategoryService.create_category(user, name=name)
+
+    @staticmethod
+    @transaction.atomic
     def update_category(user, category_id, **fields):
-        """Raises ``NotFoundError`` after a concurrent DELETE."""
+        """Raises ``NotFoundError`` after a concurrent DELETE.
+
+        The character comes before the row, the order a completion locks them in
+        (quest, character, category), and is what makes the name check hold.
+        """
         _check_fields(fields, CATEGORY_FIELDS)
+        Character.locked_for_user_id(user.pk)
         category = _get_locked(
             QuestCategory.objects.filter(user=user),
             category_id,
             'category_not_found',
         )
+        if 'name' in fields:
+            CategoryService._refuse_a_taken_name(
+                user,
+                fields['name'],
+                except_id=category.pk,
+            )
         for name, value in fields.items():
             setattr(category, name, value)
         category.save()

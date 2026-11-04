@@ -1,0 +1,33 @@
+{# The filters and the list: what a filter link replaces. The links work without JS; hx-boost takes their href, so the address they push is the one a reload asks for. #}
+<div class="quest-browser" id="quest-browser">
+  <nav class="filters" aria-label="Фільтри квестів" hx-boost="true" hx-target="#quest-browser" hx-swap="outerHTML show:none" hx-push-url="true" hx-sync="#quest-browser:replace">
+    <div class="filters__row">
+      <span class="filters__label">Стан</span>
+      <div class="filters__chips">{% for chip in status_chips %}{% include "web/partials/filter_chip.html" %}{% endfor %}</div>
+    </div>
+    <div class="filters__row">
+      <span class="filters__label">Тип</span>
+      <div class="filters__chips">{% for chip in type_chips %}{% include "web/partials/filter_chip.html" %}{% endfor %}</div>
+    </div>
+    {% if category_chips %}
+    <div class="filters__row">
+      <span class="filters__label">Категорія</span>
+      <div class="filters__chips">{% for chip in category_chips %}{% include "web/partials/filter_chip.html" %}{% endfor %}</div>
+    </div>
+    {% endif %}
+  </nav>
+
+  {% if later_page %}<p class="section__more"><a class="link" href="{{ list_url }}">До початку списку</a></p>{% endif %}
+
+  {% if page.items %}
+  <div class="quest-list" role="list">{% include "web/partials/quest_page.html" %}</div>
+  {% elif filtered %}
+  <div class="card card--compact">
+    <p>За цими фільтрами квестів немає. <a class="link" href="{% url 'web:quests' %}">Скинути фільтри</a></p>
+  </div>
+  {% else %}
+  <div class="card card--compact">
+    <p>Квестів поки немає. Створи перший!</p>
+  </div>
+  {% endif %}
+</div>

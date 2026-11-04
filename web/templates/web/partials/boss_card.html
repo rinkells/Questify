@@ -1,0 +1,49 @@
+{% load web_extras %}{% with boss=card.boss %}{# autofocus is what htmx moves the focus to after the swap, since the button pressed is usually gone. #}<article class="boss-card{% if card.defeat %} boss-card--defeated{% endif %}">
+  <div class="boss-card__head">
+    <div class="boss-card__title" tabindex="-1"{% if card.acted_on %} autofocus{% endif %}>{{ boss.title }}</div>
+    {% if card.defeat %}<span class="tag tag--completed">Переможено</span>{% elif card.reward %}<span class="tag tag--xp">+{{ card.reward }} XP</span>{% endif %}
+  </div>
+  {% if boss.description %}<p class="boss-card__text">{{ boss.description }}</p>{% endif %}
+  {% if boss.max_hp %}
+  <div class="boss-card__hp">
+    <div class="boss-card__hp-text">HP {{ boss.hp }} з {{ boss.max_hp }}</div>
+    <progress class="progress progress--sm progress--hp" value="{{ boss.hp }}" max="{{ boss.max_hp }}" aria-label="HP боса: {{ boss.hp }} з {{ boss.max_hp }}"></progress>
+  </div>
+  {% endif %}
+  {% if card.steps_hint %}<p class="boss-card__hint">{{ card.steps_hint }}</p>{% endif %}
+  {% if card.defeat %}<p class="boss-card__win">Переможено <time datetime="{{ card.defeat.defeated_at|date:'c' }}">{{ card.defeat.defeated_at|date:"j E Y" }}</time>: +{{ card.defeat.xp_awarded }} XP, +{{ card.defeat.xp_awarded }} {{ card.defeat.xp_awarded|uk_plural:"монета,монети,монет" }}</p>{% endif %}
+  {% if card.steps %}
+  <ul class="boss-steps">
+    {% for step in card.steps %}
+    <li class="boss-step{% if not step.live %} boss-step--off{% endif %}">
+      <div class="boss-step__body">
+        <div class="boss-step__title">{{ step.title }}</div>
+        {% if step.note %}<div class="boss-step__note">{{ step.note }}</div>{% endif %}
+      </div>
+      <span class="tag tag--{{ step.status }}">{{ step.label }}</span>
+      {% if step.can_detach %}
+      <form class="boss-card__form" method="post" action="{% url 'web:boss-detach' boss.pk step.quest_id %}" hx-post="{% url 'web:boss-detach' boss.pk step.quest_id %}" hx-target="#boss-list" hx-swap="outerHTML" hx-sync="#boss-list:drop" hx-disabled-elt="find button">
+        {% csrf_token %}
+        <button class="btn btn--quiet btn--sm" type="submit" aria-label="Відкріпити: {{ step.title }}">Відкріпити</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="boss-card__hint">Кроків ще немає.</p>
+  {% endif %}
+  {% if card.needs_new_step %}<p class="boss-card__hint">Перемагає лише виконання кроку: додай ще один і виконай його.</p>{% endif %}
+  {% if card.can_attach %}
+  {% include "web/partials/boss_step_form.html" %}
+  {% elif card.steps_full %}
+  <p class="boss-card__hint">Більше кроків додати не можна: максимум {{ max_steps }}.</p>
+  {% endif %}
+  <div class="boss-card__actions">
+    <form class="boss-card__form" method="post" action="{% url 'web:boss-archive' boss.pk %}" hx-post="{% url 'web:boss-archive' boss.pk %}" hx-target="#boss-list" hx-swap="outerHTML" hx-sync="#boss-list:drop" hx-disabled-elt="find button" hx-confirm="Перенести боса в архів? Невиконані кроки відкріпляться, а повернути боса звідти не можна.">
+      {% csrf_token %}
+      <button class="btn btn--quiet btn--sm" type="submit" aria-label="В архів: {{ boss.title }}">В архів</button>
+    </form>
+  </div>
+  {% if card.error %}<div class="alert alert--error" role="alert">{{ card.error }}</div>{% endif %}
+</article>{% endwith %}

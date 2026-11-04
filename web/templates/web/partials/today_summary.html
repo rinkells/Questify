@@ -1,0 +1,1 @@
+<p class="subtitle" id="today-summary"{% if oob %} hx-swap-oob="true"{% endif %}>{{ now|date:"l, j E"|capfirst }} · виконано {{ summary_completed }} з {{ summary_total }}</p>

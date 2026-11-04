@@ -44,6 +44,23 @@ def get_character(user, *, for_update=False):
         return queryset.get(user=user)
 
 
+def _general_streak(character):
+    """The general streak; ``get_character`` has it prefetched, sparing a query."""
+    prefetched_streaks = getattr(character.user, 'prefetched_streaks', None)
+    if prefetched_streaks is None:
+        return character.user.streaks.filter(quest_category=None).first()
+    return next(
+        (item for item in prefetched_streaks if item.quest_category_id is None),
+        None,
+    )
+
+
+def get_streak_freezes(character):
+    """How many freezes the character has to bridge a missed day."""
+    streak = _general_streak(character)
+    return streak.freezes_available if streak is not None else 0
+
+
 def get_current_streak(character):
     """The length of the character's running streak, 0 if it has lapsed.
 
@@ -51,14 +68,7 @@ def get_current_streak(character):
     character's timezone, or the day before with a freeze to bridge it.
     Uses ``character.user.prefetched_streaks`` when ``get_character`` loaded it.
     """
-    prefetched_streaks = getattr(character.user, 'prefetched_streaks', None)
-    if prefetched_streaks is None:
-        streak = character.user.streaks.filter(quest_category=None).first()
-    else:
-        streak = next(
-            (item for item in prefetched_streaks if item.quest_category_id is None),
-            None,
-        )
+    streak = _general_streak(character)
     if streak is None or streak.last_completed_date is None:
         return 0
 
@@ -68,6 +78,15 @@ def get_current_streak(character):
         days_since_completion == 2 and streak.freezes_available > 0
     )
     return streak.current_length if streak_is_current else 0
+
+
+def get_coins(user):
+    """The user's coin balance in one query, 0 if the character is missing."""
+    coins = Character.objects.filter(user=user).values_list(
+        'coins',
+        flat=True,
+    ).first()
+    return coins or 0
 
 
 @dataclass(frozen=True)
@@ -87,6 +106,7 @@ class CharacterOverview:
     timezone: str
     progress: XPProgress
     current_streak: int
+    streak_freezes: int
     # Every stat type, 0 for those the character has not earned yet.
     stats: list[StatValue]
 
@@ -112,5 +132,6 @@ def character_overview(user):
         timezone=character.timezone,
         progress=xp_progress(character.level, character.xp),
         current_streak=get_current_streak(character),
+        streak_freezes=get_streak_freezes(character),
         stats=stats,
     )

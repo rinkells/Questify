@@ -1,0 +1,16 @@
+{% extends "web/base.html" %}
+{% block title %}Боси{% endblock %}
+{% block content %}
+<main class="layout__main">
+  <section class="section">
+    <div class="section__head">
+      <h1 class="title">Боси</h1>
+      <a class="btn btn--primary" href="{% url 'web:boss-new' %}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Новий бос
+      </a>
+    </div>
+    {% include "web/partials/boss_list.html" %}
+  </section>
+</main>
+{% endblock %}

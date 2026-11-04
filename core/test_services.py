@@ -14,7 +14,13 @@ from quests.models import Quest, QuestCompletion, Streak
 from .errors import DomainError, NotFoundError
 from .levels import level_for_xp, xp_progress, xp_threshold
 from .models import Character, Stat, StatType
-from .selectors import character_overview, get_character, get_current_streak
+from .selectors import (
+    character_overview,
+    get_character,
+    get_coins,
+    get_current_streak,
+    get_streak_freezes,
+)
 from .services import (
     TimezoneChangeLockedError,
     change_timezone,
@@ -178,6 +184,30 @@ def test_character_overview_gathers_what_the_dashboard_shows(
         ('STR', 'Strength', 7),
         ('INT', 'Intellect', 0),
     ]
+
+
+def test_get_coins_reads_the_balance_in_one_query(user, django_assert_num_queries):
+    Character.objects.filter(user=user).update(coins=12)
+
+    with django_assert_num_queries(1):
+        assert get_coins(user) == 12
+
+
+def test_get_coins_is_zero_without_a_character(user):
+    Character.objects.filter(user=user).delete()
+
+    assert get_coins(user) == 0
+
+
+def test_streak_freezes_are_read_with_or_without_the_prefetched_copy(user):
+    assert get_streak_freezes(get_character(user)) == 0
+
+    streak_for(user, freezes_available=2)
+
+    assert get_streak_freezes(get_character(user)) == 2
+    plain = Character.objects.select_related('user').get(user=user)
+    assert get_streak_freezes(plain) == 2
+    assert character_overview(user).streak_freezes == 2
 
 
 def test_change_timezone_saves_and_returns_the_character(user):

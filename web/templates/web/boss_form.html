@@ -1,0 +1,55 @@
+{% extends "web/base.html" %}
+{% load web_extras %}
+{% block title %}Новий бос{% endblock %}
+{% block content %}
+<main class="form-page">
+  <section class="card">
+    <h1 class="title">Новий бос</h1>
+    {% if page_error %}<div class="alert alert--error" role="alert">{{ page_error }}</div>{% endif %}
+    <form class="form" method="post" action="{% url 'web:boss-new' %}">
+      {% csrf_token %}
+
+      {% include "web/partials/field.html" with name="title" label="Назва" value=values.title maxlength=255 autocomplete="off" field_errors=errors.title %}
+
+      <div class="field{% if errors.description %} field--error{% endif %}">
+        <label class="field__label" for="id_description">Опис</label>
+        <textarea class="field__input field__input--area" id="id_description" name="description" rows="3" maxlength="{{ max_description }}"{% if errors.description %} aria-invalid="true" aria-describedby="id_description_error"{% endif %}>{{ values.description }}</textarea>
+        {% if errors.description %}<div class="field__error" id="id_description_error">{% for error in errors.description %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+      </div>
+
+      <fieldset class="field field--group{% if errors.quests %} field--error{% endif %}">
+        <legend class="field__label">Кроки</legend>
+        <div class="field__hint">Кроком стає разовий квест, який ще не почато. Для перемоги потрібно щонайменше {{ min_steps }} {{ min_steps|uk_plural:"крок,кроки,кроків" }}, усього їх може бути до {{ max_steps }}. Кроки можна додати й пізніше.</div>
+        {% if quest_options %}
+        <div class="choices choices--list">
+          {% for option in quest_options %}
+          <label class="choice">
+            <input class="choice__input" type="checkbox" name="quests" value="{{ option.value }}"{% if option.checked %} checked{% endif %}>
+            <span class="choice__label">{{ option.label }}</span>
+            {% if option.deadline %}<span class="tag">до {{ option.deadline|date:"j E, H:i" }}</span>{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="choice-empty">Вільних разових квестів немає. <a class="link" href="{% url 'web:quest-new' %}?next={% url 'web:boss-new' %}">Створити квест</a></p>
+        {% endif %}
+        {% if errors.quests %}<div class="field__error">{% for error in errors.quests %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+      </fieldset>
+
+      <div class="field{% if errors.new_steps %} field--error{% endif %}">
+        <label class="field__label" for="id_new_steps">Або нові кроки</label>
+        <textarea class="field__input field__input--area" id="id_new_steps" name="new_steps" rows="4" aria-describedby="id_new_steps_hint{% if errors.new_steps %} id_new_steps_error{% endif %}"{% if errors.new_steps %} aria-invalid="true"{% endif %}>{{ values.new_steps }}</textarea>
+        <div class="field__hint" id="id_new_steps_hint">По одній назві на рядок. Кожен рядок стане разовим квестом на {{ new_step_xp }} XP.</div>
+        {% if errors.new_steps %}<div class="field__error" id="id_new_steps_error">{% for error in errors.new_steps %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</div>{% endif %}
+      </div>
+
+      {% for error in errors.non_field_errors %}<div class="alert alert--error" role="alert">{{ error }}</div>{% endfor %}
+
+      <div class="form__actions">
+        <button class="btn btn--primary" type="submit">Створити боса</button>
+        <a class="btn btn--quiet" href="{% url 'web:bosses' %}">Скасувати</a>
+      </div>
+    </form>
+  </section>
+</main>
+{% endblock %}

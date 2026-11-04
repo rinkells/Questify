@@ -1,0 +1,29 @@
+{% load web_extras %}<section class="card" id="character-card"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="character">
+    <div class="avatar avatar--lg">
+      <span aria-hidden="true">{{ user|initials }}</span>
+      <span class="avatar__badge">Lv {{ overview.level }}</span>
+    </div>
+    <div class="character__body">
+      <div class="character__head">
+        <span class="character__name">{{ user|display_name }}</span>
+      </div>
+      <progress class="progress" value="{{ overview.progress.xp_in_level }}" max="{{ overview.progress.xp_for_level }}" aria-label="Прогрес рівня"></progress>
+      <div class="character__caption">
+        <span>{{ overview.progress.xp_in_level }} / {{ overview.progress.xp_for_level }} XP</span>
+        <span>до рівня {{ overview.level|add:1 }}: {{ overview.progress.xp_to_next_level }} XP</span>
+      </div>
+    </div>
+  </div>
+  {% if stats %}
+  <div class="tiles">
+    {% for stat in stats %}
+    <div class="tile" title="{{ stat|stat_label }}">
+      {% include "web/partials/stat_icon.html" with icon=stat.icon %}
+      <div class="tile__value">{{ stat.value }}</div>
+      <div class="tile__label">{{ stat|stat_label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>

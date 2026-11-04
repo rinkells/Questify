@@ -1,0 +1,39 @@
+{# One skill and, nested inside it, its children. autofocus is what htmx moves the focus to after the swap, since the button pressed is usually gone. #}
+<li class="skill-node">
+  <div class="skill-node__card skill-node__card--{{ node.status }}">
+    <div class="skill-node__body">
+      <div class="skill-node__name" tabindex="-1"{% if node.acted_on %} autofocus{% endif %}>{{ node.name }}</div>
+      {% if node.description %}<p class="skill-node__text">{{ node.description }}</p>{% endif %}
+      {% if node.requirements %}
+      <ul class="requirements">
+        {% for requirement in node.requirements %}
+        <li class="requirement{% if requirement.met %} requirement--met{% endif %}">
+          {% if requirement.met %}
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Виконано"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+          {% else %}
+          <span class="requirement__mark" aria-hidden="true"></span>
+          {% endif %}
+          <span>{{ requirement.text }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if node.waits_for %}<p class="skill-node__hint">Спершу відкрий «{{ node.waits_for }}».</p>{% endif %}
+    </div>
+    <div class="skill-node__side">
+      <span class="tag tag--{{ node.status }}">{{ node.status_label }}</span>
+      {% if node.status == "available" %}
+      <form class="skill-node__form" method="post" action="{% url 'web:skill-unlock' node.id %}" hx-post="{% url 'web:skill-unlock' node.id %}" hx-target="#skill-tree" hx-swap="outerHTML" hx-sync="#skill-tree:drop" hx-disabled-elt="find button">
+        {% csrf_token %}
+        <button class="btn btn--primary btn--sm" type="submit" aria-label="Відкрити: {{ node.name }}">Відкрити</button>
+      </form>
+      {% endif %}
+    </div>
+    {% if node.error %}<div class="alert alert--error skill-node__alert" role="alert">{{ node.error }}</div>{% endif %}
+  </div>
+  {% if node.children %}
+  <ul class="skill-tree skill-tree--nested">
+    {% for child in node.children %}{% include "web/partials/skill_node.html" with node=child %}{% endfor %}
+  </ul>
+  {% endif %}
+</li>

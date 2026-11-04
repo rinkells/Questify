@@ -1,0 +1,11 @@
+{% extends "web/base.html" %}
+{% block title %}Сесія застаріла{% endblock %}
+{% block page %}
+<main class="auth">
+  <section class="card auth__card">
+    <h1 class="title">Сесія застаріла</h1>
+    <p>Форма більше не дійсна. Онови сторінку й спробуй ще раз.</p>
+    <a class="btn btn--primary btn--block" href="{% url 'web:today' %}">На головну</a>
+  </section>
+</main>
+{% endblock %}

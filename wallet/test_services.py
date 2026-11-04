@@ -9,7 +9,12 @@ from django.utils import timezone
 from core.models import Character
 
 from .models import RewardRedemption, WalletTransaction
-from .selectors import rewards_for_user, transactions_for_user
+from .selectors import (
+    TRANSACTION_PAGE_SIZE,
+    rewards_for_user,
+    transaction_page,
+    transactions_for_user,
+)
 from .services import RedemptionError, RewardLimitError, RewardService, WalletService
 
 User = get_user_model()
@@ -192,3 +197,86 @@ def test_transactions_for_user_loads_redemptions_without_a_query_each(
 
     assert titles == ['Cake'] * 3
 
+
+
+# -- pages of the history -------------------------------------------------------
+
+
+def add_rows(user, count):
+    start = timezone.now() - timedelta(days=count)
+    rows = [
+        WalletTransaction.objects.create(
+            user=user,
+            kind=WalletTransaction.Kind.QUEST_REWARD,
+            amount=index + 1,
+            balance_after=index + 1,
+            created_at=start + timedelta(hours=index),
+        )
+        for index in range(count)
+    ]
+    return list(reversed(rows))
+
+
+def test_transaction_pages_cover_the_history_once_in_its_order(user, other_user):
+    add_rows(other_user, 2)
+    newest_first = add_rows(user, 5)
+
+    first = transaction_page(user, limit=2)
+    second = transaction_page(user, before=first.next_before, limit=2)
+    third = transaction_page(user, before=second.next_before, limit=2)
+
+    assert first.items == newest_first[:2]
+    assert second.items == newest_first[2:4]
+    assert third.items == newest_first[4:]
+    assert third.next_before is None
+
+
+def test_a_transaction_page_of_rows_with_one_timestamp_loses_none(user):
+    when = timezone.now()
+    rows = [
+        WalletTransaction.objects.create(
+            user=user,
+            kind=WalletTransaction.Kind.QUEST_REWARD,
+            amount=1,
+            balance_after=index + 1,
+            created_at=when,
+        )
+        for index in range(3)
+    ]
+
+    first = transaction_page(user, limit=2)
+    second = transaction_page(user, before=first.next_before, limit=2)
+
+    assert [row.pk for row in first.items + second.items] == sorted(
+        (row.pk for row in rows),
+        reverse=True,
+    )
+
+
+def test_a_transaction_page_ignores_a_cursor_that_is_not_the_users(user, other_user):
+    add_rows(user, 1)
+    theirs = add_rows(other_user, 1)[0]
+
+    assert len(transaction_page(user, before=theirs.pk).items) == 1
+    assert len(transaction_page(user, before=987654).items) == 1
+
+
+def test_a_transaction_page_takes_one_query_and_two_with_a_cursor(
+    user,
+    django_assert_num_queries,
+):
+    rows = add_rows(user, TRANSACTION_PAGE_SIZE + 1)
+    reward = RewardService.create_reward(user, title='Film night', cost=1)
+    give_coins(user, 10)
+    WalletService.redeem_reward(user, reward.pk)
+
+    with django_assert_num_queries(1):
+        page = transaction_page(user)
+        titles = [
+            row.redemption.title_at_redemption if row.redemption else None
+            for row in page.items
+        ]
+    assert titles[0] == 'Film night'
+
+    with django_assert_num_queries(2):
+        transaction_page(user, before=rows[0].pk)

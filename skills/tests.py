@@ -1,8 +1,11 @@
+import importlib
 import threading
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+from django.apps import apps as django_apps
 from django.contrib import admin
 from django.contrib.admin.models import LogEntry
 from django.contrib.auth import get_user_model
@@ -26,6 +29,7 @@ from events.event_types import EventResult, SkillUnlockedEvent
 from quests.models import Quest, QuestCategory, QuestCompletion
 
 from .admin import SkillAdmin, SkillRequirementInline, UserSkillAdmin
+from .management.commands.seed_skills import HEALTH, SKILL_TREE, STUDY
 from .models import Skill, SkillRequirement, UserSkill, lock_skill_catalog
 from .serializers import (
     SkillRequirementProgressSerializer,
@@ -1166,10 +1170,554 @@ def test_seed_skills_builds_the_example_tree_once(user):
     tree = SkillService.get_tree(user)
 
     assert Skill.objects.count() == 7
-    assert [node['name'] for node in tree] == ['First Steps']
+    assert [node['name'] for node in tree] == ['Перші кроки']
     assert [node['name'] for node in tree[0]['children']] == [
-        'Routine Builder',
-        'Scholar',
-        'Athlete',
+        'Майстер рутини',
+        'Дослідник',
+        'Атлет',
     ]
     assert tree[0]['status'] == 'locked'
+
+
+def seeded_names(nodes=SKILL_TREE):
+    for name, earlier_name, *_, children in nodes:
+        yield name, earlier_name
+        yield from seeded_names(children)
+
+
+@pytest.fixture
+def english_catalog(db):
+    """The catalog as the command left it before its texts were translated."""
+    call_command('seed_skills', stdout=StringIO())
+    for name, earlier_name in seeded_names():
+        Skill.objects.filter(name=name).update(
+            name=earlier_name,
+            description='Old English text.',
+        )
+    use_english_categories()
+
+
+def use_english_categories():
+    """The requirements as the command created them before the categories were translated."""
+    for name, earlier_name in (STUDY, HEALTH):
+        SkillRequirement.objects.filter(category_name=name).update(
+            category_name=earlier_name,
+            category_key=earlier_name.lower(),
+        )
+
+
+def requirement_rows():
+    """Every requirement except its category, which is what the command may change."""
+    return list(
+        SkillRequirement.objects.order_by('pk').values(
+            'pk',
+            'skill_id',
+            'requirement_type',
+            'threshold',
+        )
+    )
+
+
+def test_seed_skills_translates_the_rows_it_created_in_place(english_catalog, user):
+    first_steps = Skill.objects.get(name='First Steps')
+    scholar = Skill.objects.get(name='Scholar')
+    unlocked = UserSkill.objects.create(user=user, skill=first_steps)
+    tree_ids = dict(Skill.objects.values_list('id', 'parent_id'))
+    requirements = requirement_rows()
+
+    out = StringIO()
+    call_command('seed_skills', stdout=out)
+
+    assert 'Created 0 skill(s), updated 7, moved 4 requirement(s)' in out.getvalue()
+    first_steps.refresh_from_db()
+    scholar.refresh_from_db()
+    assert first_steps.name == 'Перші кроки'
+    assert first_steps.description == 'Виконай свій перший квест.'
+    assert scholar.name == 'Дослідник'
+    # The same rows: nobody loses an unlock, and no requirement is added or lost.
+    assert dict(Skill.objects.values_list('id', 'parent_id')) == tree_ids
+    assert requirement_rows() == requirements
+    assert UserSkill.objects.get(pk=unlocked.pk).skill_id == first_steps.pk
+    assert not Skill.objects.filter(description='Old English text.').exists()
+
+
+def test_seed_skills_names_the_categories_in_ukrainian(db):
+    call_command('seed_skills', stdout=StringIO())
+
+    assert set(
+        SkillRequirement.objects.exclude(category_name='').values_list(
+            'category_name',
+            'category_key',
+        )
+    ) == {('Навчання', 'навчання'), ("Здоров'я", "здоров'я")}
+    # A description must not send the user to a category that does not count.
+    assert '«Навчання»' in Skill.objects.get(name='Дослідник').description
+    assert "«Здоров'я»" in Skill.objects.get(name='Атлет').description
+    assert not Skill.objects.filter(description__contains='Study').exists()
+    assert not Skill.objects.filter(description__contains='Health').exists()
+
+
+def test_seed_skills_moves_the_categories_of_a_catalog_already_in_ukrainian(db):
+    call_command('seed_skills', stdout=StringIO())
+    use_english_categories()
+    SkillRequirement.objects.filter(
+        skill__name='Дослідник',
+        category_name='Study',
+    ).update(threshold=9)
+    requirements = requirement_rows()
+
+    out = StringIO()
+    call_command('seed_skills', stdout=out)
+
+    assert 'moved 4 requirement(s)' in out.getvalue()
+    assert requirement_rows() == requirements
+    requirement = Skill.objects.get(name='Дослідник').requirements.get()
+    assert (requirement.category_name, requirement.category_key) == (
+        'Навчання',
+        'навчання',
+    )
+    # An admin's threshold stays: only the category is the command's to change.
+    assert requirement.threshold == 9
+
+
+def test_seed_skills_does_not_duplicate_requirements_however_often_it_runs(english_catalog):
+    requirements = requirement_rows()
+
+    for _ in range(3):
+        call_command('seed_skills', stdout=StringIO())
+
+    assert requirement_rows() == requirements
+    assert not SkillRequirement.objects.filter(
+        category_name__in=('Study', 'Health'),
+    ).exists()
+
+
+def test_seed_skills_leaves_an_earlier_requirement_when_the_category_is_taken(
+    english_catalog,
+):
+    scholar = Skill.objects.get(name='Scholar')
+    earlier = scholar.requirements.get()
+    taken = SkillRequirement.objects.create(
+        skill=scholar,
+        requirement_type=RequirementType.QUEST_COUNT_BY_CATEGORY,
+        threshold=3,
+        category_name='Навчання',
+    )
+
+    # Renaming onto it would only fail at the commit, on the deferred constraint.
+    with transaction.atomic():
+        call_command('seed_skills', stdout=StringIO())
+        with connection.cursor() as cursor:
+            cursor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+
+    earlier.refresh_from_db()
+    taken.refresh_from_db()
+    assert earlier.category_name == 'Study'
+    assert taken.threshold == 3
+
+
+def test_seed_skills_leaves_a_requirement_an_admin_pointed_elsewhere(db):
+    call_command('seed_skills', stdout=StringIO())
+    scholar = Skill.objects.get(name='Дослідник')
+    requirement = scholar.requirements.get()
+    requirement.category_name = 'Книжки'
+    requirement.save()
+
+    out = StringIO()
+    call_command('seed_skills', stdout=out)
+
+    assert 'moved 0 requirement(s)' in out.getvalue()
+    assert scholar.requirements.get().category_name == 'Книжки'
+
+
+def test_seed_skills_does_not_bring_back_a_requirement_an_admin_removed(db):
+    call_command('seed_skills', stdout=StringIO())
+    scholar = Skill.objects.get(name='Дослідник')
+    scholar.requirements.all().delete()
+
+    call_command('seed_skills', stdout=StringIO())
+
+    assert not scholar.requirements.exists()
+
+
+def test_seed_skills_writes_the_skills_before_the_requirements(english_catalog):
+    # Skills in the first place of the walk are left unchanged on purpose: if nothing
+    # had written the skills' table yet, a requirement could still come first.
+    Skill.objects.filter(name='First Steps').update(
+        name='Перші кроки',
+        description='Виконай свій перший квест.',
+    )
+
+    with CaptureQueriesContext(connection) as queries:
+        call_command('seed_skills', stdout=StringIO())
+
+    writes = [
+        query['sql']
+        for query in queries
+        if query['sql'].startswith('UPDATE')
+    ]
+    tables = [sql.split('"')[1] for sql in writes]
+    assert tables == sorted(tables)
+    assert set(tables) == {'skills_skill', 'skills_skillrequirement'}
+
+
+def test_every_seeded_row_passes_validation(db):
+    call_command('seed_skills', stdout=StringIO())
+
+    for requirement in SkillRequirement.objects.all():
+        requirement.full_clean()
+    for skill in Skill.objects.all():
+        skill.full_clean()
+
+
+def api_requirement(api_client, skill_name):
+    """The one category requirement of a seeded skill, as the API reports it."""
+    pending = list(api_client.get('/api/skills/tree/').json())
+    while pending:
+        node = pending.pop()
+        if node['name'] == skill_name:
+            return next(
+                item
+                for item in node['requirements']
+                if item['type'] == RequirementType.QUEST_COUNT_BY_CATEGORY
+            ), node['status']
+        pending.extend(node['children'])
+    raise AssertionError(f'{skill_name} is not in the tree')
+
+
+def complete_a_quest_under(api_client, user, category):
+    quest = Quest.objects.create(
+        user=user,
+        category=category,
+        title=f'A quest in {category.name}',
+        quest_type=Quest.QuestType.ONE_TIME,
+        xp_reward=50,
+    )
+    assert api_client.post(f'/api/quests/{quest.id}/complete/').status_code == 200
+
+
+def complete_a_quest_in(api_client, user, category_name):
+    category = QuestCategory.objects.create(user=user, name=category_name)
+    complete_a_quest_under(api_client, user, category)
+
+
+def rename_category(api_client, category, name):
+    response = api_client.patch(
+        f'/api/quest-categories/{category.id}/',
+        {'name': name},
+        format='json',
+    )
+    assert response.status_code == 200
+    category.refresh_from_db()
+
+
+def recorded_names(user):
+    return list(
+        QuestCompletion.objects.filter(user=user).order_by('pk').values_list(
+            'category_name_at_completion',
+            flat=True,
+        )
+    )
+
+
+def test_a_quest_in_navchannia_counts_for_the_scholar_in_any_case(api_client, user):
+    call_command('seed_skills', stdout=StringIO())
+    category = QuestCategory.objects.create(user=user, name='Навчання')
+
+    complete_a_quest_under(api_client, user, category)
+    assert api_requirement(api_client, 'Дослідник')[0] == {
+        'type': 'quest_count_by_category',
+        'category': 'Навчання',
+        'current': 1,
+        'required': 5,
+        'met': False,
+    }
+
+    rename_category(api_client, category, 'навчання')
+    complete_a_quest_under(api_client, user, category)
+    assert api_requirement(api_client, 'Дослідник')[0]['current'] == 2
+
+    rename_category(api_client, category, 'НАВЧАННЯ')
+    complete_a_quest_under(api_client, user, category)
+    assert api_requirement(api_client, 'Дослідник')[0]['current'] == 3
+    # Each completion keeps the name its category had, so all three were compared.
+    assert recorded_names(user) == ['Навчання', 'навчання', 'НАВЧАННЯ']
+
+
+def test_a_quest_in_another_category_does_not_count_for_the_scholar(api_client, user):
+    call_command('seed_skills', stdout=StringIO())
+
+    complete_a_quest_in(api_client, user, 'Study')
+    complete_a_quest_in(api_client, user, 'Навчальне')
+    complete_a_quest_in(api_client, user, "Здоров'я")
+
+    assert api_requirement(api_client, 'Дослідник')[0]['current'] == 0
+
+
+def test_a_quest_in_zdorovia_counts_for_the_athlete_in_any_case(api_client, user):
+    call_command('seed_skills', stdout=StringIO())
+    category = QuestCategory.objects.create(user=user, name="Здоров'я")
+
+    complete_a_quest_under(api_client, user, category)
+    rename_category(api_client, category, "ЗДОРОВ'Я")
+    complete_a_quest_under(api_client, user, category)
+
+    requirement, _ = api_requirement(api_client, 'Атлет')
+    assert requirement['category'] == "Здоров'я"
+    assert requirement['current'] == 2
+    assert recorded_names(user) == ["Здоров'я", "ЗДОРОВ'Я"]
+
+
+@pytest.mark.parametrize('apostrophe', ['’', 'ʼ'])
+def test_a_quest_with_a_typographic_apostrophe_counts_for_the_athlete(
+    api_client,
+    user,
+    apostrophe,
+):
+    call_command('seed_skills', stdout=StringIO())
+
+    complete_a_quest_in(api_client, user, f'Здоров{apostrophe}я')
+
+    requirement, _ = api_requirement(api_client, 'Атлет')
+    assert requirement['category'] == "Здоров'я"
+    assert requirement['current'] == 1
+
+
+def test_every_apostrophe_adds_to_one_count(api_client, user):
+    call_command('seed_skills', stdout=StringIO())
+    for name in ("Здоров'я", 'Здоров’я', 'ЗДОРОВʼЯ'):
+        record_completion(user, category_name=name)
+
+    assert api_requirement(api_client, 'Атлет')[0]['current'] == 3
+
+
+def test_a_requirement_with_a_typographic_apostrophe_matches_any_of_them(user, stat_type):
+    skill = make_skill(
+        stat_type,
+        'Typed',
+        (RequirementType.QUEST_COUNT_BY_CATEGORY, 5, 'Здоров’я'),
+    )
+    record_completion(user, category_name="Здоров'я")
+
+    requirement = skill.requirements.get()
+    # Shown as it was typed, compared by the key.
+    assert requirement.category_name == 'Здоров’я'
+    assert requirement.category_key == "здоров'я"
+    assert tree_node(user, 'Typed')['requirements'][0]['current'] == 1
+
+
+def test_admin_refuses_requirements_differing_only_by_an_apostrophe(stat_type):
+    skill = make_skill(stat_type, 'Typed')
+    by_category = RequirementType.QUEST_COUNT_BY_CATEGORY
+
+    formset = requirement_formset(
+        skill,
+        (by_category, 1, "Здоров'я"),
+        (by_category, 2, 'Здоров’я'),
+    )
+
+    assert not formset.is_valid()
+    assert 'apostrophes' in str(formset.non_form_errors())
+
+
+key_migration = importlib.import_module(
+    'skills.migrations.0002_recalculate_requirement_category_keys',
+)
+migration_editor = SimpleNamespace(connection=connection)
+
+
+def as_the_earlier_rule_stored(requirement):
+    SkillRequirement.objects.filter(pk=requirement.pk).update(
+        category_key=requirement.category_name.strip().lower(),
+    )
+
+
+def test_the_key_migration_recalculates_and_goes_back(stat_type):
+    by_category = RequirementType.QUEST_COUNT_BY_CATEGORY
+    typed = make_skill(stat_type, 'Typed', (by_category, 5, 'Здоров’я'))
+    plain = make_skill(
+        stat_type,
+        'Plain',
+        (by_category, 5, "Здоров'я"),
+        (RequirementType.TOTAL_XP, 100),
+    )
+    typed_requirement = typed.requirements.get()
+    as_the_earlier_rule_stored(typed_requirement)
+
+    key_migration.use_normalized_keys(django_apps, migration_editor)
+
+    typed_requirement.refresh_from_db()
+    assert typed_requirement.category_key == "здоров'я"
+    # Only the key: what the admin sees, and what earns the skill, stay.
+    assert typed_requirement.category_name == 'Здоров’я'
+    assert typed_requirement.threshold == 5
+    assert set(plain.requirements.values_list('category_key', flat=True)) == {
+        "здоров'я",
+        '',
+    }
+
+    key_migration.use_previous_keys(django_apps, migration_editor)
+
+    typed_requirement.refresh_from_db()
+    assert typed_requirement.category_key == 'здоров’я'
+    assert typed_requirement.category_name == 'Здоров’я'
+
+
+def test_the_key_migration_stops_with_a_list_of_the_duplicates(stat_type):
+    by_category = RequirementType.QUEST_COUNT_BY_CATEGORY
+    skill = make_skill(stat_type, 'Twice', (by_category, 5, "Здоров'я"))
+    # In another skill or of another type the same name is no conflict.
+    make_skill(stat_type, 'Elsewhere', (by_category, 5, 'Здоров’я'))
+    second = SkillRequirement.objects.create(
+        skill=skill,
+        requirement_type=by_category,
+        threshold=6,
+        category_name='Здоров’я',
+    )
+    as_the_earlier_rule_stored(second)
+
+    with pytest.raises(RuntimeError) as refusal:
+        key_migration.use_normalized_keys(django_apps, migration_editor)
+
+    message = str(refusal.value)
+    assert "'Twice'" in message
+    assert str(second.pk) in message
+    assert 'Здоров’я' in message
+    assert 'Elsewhere' not in message
+    # Refused before any write.
+    second.refresh_from_db()
+    assert second.category_key == 'здоров’я'
+
+
+def test_the_scholar_opens_with_quests_in_the_translated_category(api_client, user):
+    call_command('seed_skills', stdout=StringIO())
+    category = QuestCategory.objects.create(user=user, name='Навчання')
+    complete_a_quest_under(api_client, user, category)
+    for name in ('навчання', 'НАВЧАННЯ', 'НаВчАнНя', 'навчаННЯ'):
+        rename_category(api_client, category, name)
+        complete_a_quest_under(api_client, user, category)
+    requirement, status = api_requirement(api_client, 'Дослідник')
+    assert requirement['met']
+    # All it still needs is its parent.
+    assert status == 'locked'
+
+    root = Skill.objects.get(name='Перші кроки')
+    scholar = Skill.objects.get(name='Дослідник')
+    assert api_client.post(f'/api/skills/{root.id}/unlock/').status_code == 200
+    assert api_requirement(api_client, 'Дослідник')[1] == 'available'
+    assert api_client.post(f'/api/skills/{scholar.id}/unlock/').status_code == 200
+    assert api_requirement(api_client, 'Дослідник')[1] == 'unlocked'
+
+
+def test_progress_is_counted_from_the_completions_on_every_read(api_client, user):
+    call_command('seed_skills', stdout=StringIO())
+
+    complete_a_quest_in(api_client, user, 'Навчання')
+    assert api_requirement(api_client, 'Дослідник')[0]['current'] == 1
+
+    # Nothing kept a count of its own to fall out of step with the history.
+    QuestCompletion.objects.filter(user=user).delete()
+    assert api_requirement(api_client, 'Дослідник')[0]['current'] == 0
+
+
+def test_completions_recorded_under_the_earlier_name_no_longer_count(
+    english_catalog,
+    api_client,
+    user,
+):
+    for _ in range(3):
+        record_completion(user, category_name='Study')
+    assert api_requirement(api_client, 'Scholar')[0]['current'] == 3
+
+    call_command('seed_skills', stdout=StringIO())
+
+    # Each completion keeps the name its category had, and the key is compared as it is.
+    assert api_requirement(api_client, 'Дослідник')[0]['current'] == 0
+    assert QuestCompletion.objects.filter(
+        user=user,
+        category_name_at_completion='Study',
+    ).count() == 3
+
+
+def test_unlocked_skills_stay_unlocked_when_their_category_is_translated(
+    english_catalog,
+    api_client,
+    user,
+):
+    first_steps = Skill.objects.get(name='First Steps')
+    scholar = Skill.objects.get(name='Scholar')
+    for _ in range(5):
+        record_completion(user, category_name='Study')
+    assert api_client.post(f'/api/skills/{first_steps.id}/unlock/').status_code == 200
+    assert api_client.post(f'/api/skills/{scholar.id}/unlock/').status_code == 200
+    unlocks = list(UserSkill.objects.order_by('pk').values())
+
+    call_command('seed_skills', stdout=StringIO())
+
+    assert list(UserSkill.objects.order_by('pk').values()) == unlocks
+    requirement, status = api_requirement(api_client, 'Дослідник')
+    # The progress under the old name is gone; the skill it earned is not.
+    assert requirement['current'] == 0
+    assert status == 'unlocked'
+    # Its children count as under an unlocked parent, as they did.
+    assert api_requirement(api_client, 'Глибокий фокус')[1] == 'locked'
+
+    repeated = api_client.post(f'/api/skills/{scholar.id}/unlock/')
+    assert repeated.status_code == 200
+    assert repeated.json()['achievements_unlocked'] == []
+    assert list(UserSkill.objects.order_by('pk').values()) == unlocks
+
+
+def test_seed_skills_runs_again_brings_back_texts_and_leaves_the_logic(db):
+    call_command('seed_skills', stdout=StringIO())
+    other_stat = StatType.objects.create(name='LUK', display_name='Luck')
+    unstoppable = Skill.objects.get(name='Незупинний')
+    root = Skill.objects.get(name='Перші кроки')
+    Skill.objects.filter(pk=unstoppable.pk).update(
+        description='Edited in the admin.',
+        parent=root,
+        order=9,
+        category=other_stat,
+    )
+    SkillRequirement.objects.filter(skill=unstoppable).update(threshold=7)
+
+    call_command('seed_skills', stdout=StringIO())
+
+    unstoppable.refresh_from_db()
+    assert unstoppable.description == '100 квестів і 2500 XP.'
+    assert unstoppable.parent == root
+    assert unstoppable.order == 9
+    assert unstoppable.category == other_stat
+    assert set(
+        unstoppable.requirements.values_list('threshold', flat=True)
+    ) == {7}
+
+
+def test_seed_skills_writes_nothing_when_the_catalog_is_up_to_date(db):
+    call_command('seed_skills', stdout=StringIO())
+
+    out = StringIO()
+    with CaptureQueriesContext(connection) as queries:
+        call_command('seed_skills', stdout=out)
+
+    assert 'Created 0 skill(s), updated 0' in out.getvalue()
+    assert not [
+        query['sql']
+        for query in queries
+        if query['sql'].startswith(('UPDATE', 'INSERT', 'DELETE'))
+    ]
+
+
+def test_seed_skills_leaves_an_earlier_row_when_its_new_name_is_taken(english_catalog):
+    earlier = Skill.objects.get(name='First Steps')
+    taken = Skill.objects.create(
+        name='Перші кроки',
+        category=earlier.category,
+    )
+
+    call_command('seed_skills', stdout=StringIO())
+
+    earlier.refresh_from_db()
+    taken.refresh_from_db()
+    assert earlier.name == 'First Steps'
+    assert taken.description == 'Виконай свій перший квест.'

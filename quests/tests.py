@@ -11,7 +11,12 @@ from django.utils import timezone
 
 from core.models import Character, Stat, StatType
 
-from .admin import DailyBonusAdmin, QuestAdmin, QuestCompletionAdmin
+from .admin import (
+	DailyBonusAdmin,
+	QuestAdmin,
+	QuestCategoryAdmin,
+	QuestCompletionAdmin,
+)
 from .models import (
 	DailyBonus,
 	Quest,
@@ -1861,3 +1866,336 @@ def test_admin_shows_daily_bonuses_read_only():
 	assert bonus_admin.has_add_permission(None) is False
 	assert bonus_admin.has_change_permission(None) is False
 	assert bonus_admin.has_delete_permission(None) is False
+
+
+# -- unique category names ----------------------------------------------------------
+
+
+SAME_KEY_NAMES = [
+	("Здоров'я", 'Здоров\u2019я'),
+	("Здоров'я", 'Здоров\u02bcя'),
+	('Здоров\u2019я', "Здоров'я"),
+	("Здоров'я", "ЗДОРОВ'Я"),
+	('Study', ' study '),
+]
+TAKEN_NAME = {'name': 'You already have a category with this name.'}
+
+
+def post_category(client, name):
+	return client.post('/api/quest-categories/', {'name': name}, format='json')
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(('first', 'second'), SAME_KEY_NAMES)
+def test_a_second_post_with_the_same_key_is_a_400(api_client, user, first, second):
+	api_client.force_authenticate(user=user)
+
+	assert post_category(api_client, first).status_code == 201
+	response = post_category(api_client, second)
+
+	assert response.status_code == 400
+	assert response.json() == TAKEN_NAME
+	assert QuestCategory.objects.filter(user=user).count() == 1
+
+
+@pytest.mark.django_db
+def test_another_user_may_have_the_same_category_name(api_client, user, other_user):
+	QuestCategory.objects.create(user=other_user, name="Здоров'я")
+	api_client.force_authenticate(user=user)
+
+	assert post_category(api_client, 'Здоров\u2019я').status_code == 201
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('method', ['patch', 'put'])
+@pytest.mark.parametrize(('taken', 'typed'), SAME_KEY_NAMES)
+def test_renaming_onto_a_taken_name_is_a_400(api_client, user, method, taken, typed):
+	QuestCategory.objects.create(user=user, name=taken)
+	other = QuestCategory.objects.create(user=user, name='Other')
+	api_client.force_authenticate(user=user)
+
+	response = getattr(api_client, method)(
+		f'/api/quest-categories/{other.pk}/',
+		{'name': typed},
+		format='json',
+	)
+
+	assert response.status_code == 400
+	assert response.json() == TAKEN_NAME
+	other.refresh_from_db()
+	assert (other.name, other.category_key) == ('Other', 'other')
+
+
+@pytest.mark.django_db
+def test_a_category_may_change_its_own_case_and_apostrophe(api_client, user):
+	category = QuestCategory.objects.create(user=user, name="Здоров'я")
+	api_client.force_authenticate(user=user)
+
+	response = api_client.patch(
+		f'/api/quest-categories/{category.pk}/',
+		{'name': 'ЗДОРОВ\u2019Я'},
+		format='json',
+	)
+
+	assert response.status_code == 200
+	assert response.json()['name'] == 'ЗДОРОВ\u2019Я'
+	category.refresh_from_db()
+	assert category.category_key == "здоров'я"
+
+
+@pytest.mark.django_db
+def test_a_patch_without_a_name_is_not_checked(api_client, user):
+	category = QuestCategory.objects.create(user=user, name='Study')
+	api_client.force_authenticate(user=user)
+
+	response = api_client.patch(
+		f'/api/quest-categories/{category.pk}/',
+		{'icon': 'book'},
+		format='json',
+	)
+
+	assert response.status_code == 200
+	category.refresh_from_db()
+	assert (category.name, category.icon) == ('Study', 'book')
+
+
+@pytest.mark.django_db
+def test_a_freed_name_can_be_used_again(api_client, user):
+	category = QuestCategory.objects.create(user=user, name='Study')
+	api_client.force_authenticate(user=user)
+
+	assert api_client.delete(f'/api/quest-categories/{category.pk}/').status_code == 204
+
+	assert post_category(api_client, 'study').status_code == 201
+
+
+@pytest.mark.django_db
+def test_the_key_stays_out_of_the_api(api_client, user):
+	api_client.force_authenticate(user=user)
+
+	response = post_category(api_client, 'Study')
+
+	assert set(response.json()) == {'id', 'name', 'icon'}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_parallel_posts_of_one_name_create_one_category(user):
+	import threading
+	from django.db import connection
+
+	barrier = threading.Barrier(2)
+	statuses = []
+
+	def post(name):
+		client = APIClient(raise_request_exception=False)
+		client.force_authenticate(user=user)
+		try:
+			barrier.wait(timeout=5)
+			statuses.append(post_category(client, name).status_code)
+		finally:
+			connection.close()
+
+	threads = [
+		threading.Thread(target=post, args=(name,), daemon=True)
+		for name in ("Здоров'я", 'Здоров\u2019я')
+	]
+	for thread in threads:
+		thread.start()
+	for thread in threads:
+		thread.join(timeout=10)
+
+	assert sorted(statuses) == [201, 400]
+	assert QuestCategory.objects.filter(user=user).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_parallel_renames_onto_one_name_leave_one_of_them(user):
+	import threading
+	from django.db import connection
+
+	categories = [
+		QuestCategory.objects.create(user=user, name=name) for name in ('One', 'Two')
+	]
+	barrier = threading.Barrier(2)
+	statuses = []
+
+	def rename(category):
+		client = APIClient(raise_request_exception=False)
+		client.force_authenticate(user=user)
+		try:
+			barrier.wait(timeout=5)
+			statuses.append(client.patch(
+				f'/api/quest-categories/{category.pk}/',
+				{'name': 'Taken'},
+				format='json',
+			).status_code)
+		finally:
+			connection.close()
+
+	threads = [
+		threading.Thread(target=rename, args=(category,), daemon=True)
+		for category in categories
+	]
+	for thread in threads:
+		thread.start()
+	for thread in threads:
+		thread.join(timeout=10)
+
+	assert sorted(statuses) == [200, 400]
+	assert QuestCategory.objects.filter(user=user, category_key='taken').count() == 1
+
+
+def category_admin_form(data):
+	form_class = QuestCategoryAdmin(QuestCategory, django_admin.site).get_form(
+		superuser_request(),
+	)
+	return form_class(data)
+
+
+@pytest.mark.django_db
+def test_admin_refuses_a_name_the_user_already_has(user):
+	QuestCategory.objects.create(user=user, name="Здоров'я")
+
+	form = category_admin_form({'user': user.pk, 'name': 'Здоров\u2019я', 'icon': ''})
+
+	assert not form.is_valid()
+	assert 'apostrophes' in form.errors['name'][0]
+
+
+@pytest.mark.django_db
+def test_admin_sets_the_key_of_what_it_saves_and_leaves_the_name(user):
+	form = category_admin_form({'user': user.pk, 'name': 'Здоров\u2019я', 'icon': ''})
+
+	assert form.is_valid(), form.errors
+	category = form.save()
+
+	category.refresh_from_db()
+	assert category.name == 'Здоров\u2019я'
+	assert category.category_key == "здоров'я"
+	assert 'category_key' not in form.fields
+
+
+BEFORE_CATEGORY_KEY = ('quests', '0015_daily_bonus')
+CATEGORY_KEY = ('quests', '0016_questcategory_category_key')
+
+
+def category_columns():
+	from django.db import connection
+
+	with connection.cursor() as cursor:
+		return [
+			column.name
+			for column in connection.introspection.get_table_description(
+				cursor,
+				'quests_questcategory',
+			)
+		]
+
+
+def migrate_categories_to(target):
+	from django.db import connection
+	from django.db.migrations.executor import MigrationExecutor
+
+	executor = MigrationExecutor(connection)
+	executor.migrate([target])
+	return MigrationExecutor(connection).loader.project_state(target).apps.get_model(
+		'quests',
+		'QuestCategory',
+	)
+
+
+@pytest.fixture
+def categories_before_the_key(transactional_db):
+	from django.db import connection
+	from django.db.migrations.executor import MigrationExecutor
+
+	earlier = migrate_categories_to(BEFORE_CATEGORY_KEY)
+	yield earlier
+	# Back to where every other test expects the schema, whatever this one left.
+	earlier.objects.all().delete()
+	executor = MigrationExecutor(connection)
+	executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+def test_the_category_key_migration_fills_the_keys_and_goes_back(
+	user,
+	other_user,
+	categories_before_the_key,
+):
+	earlier = categories_before_the_key
+	rows = {
+		name: earlier.objects.create(user_id=user.pk, name=name).pk
+		for name in ('Здоров\u2019я', ' Навчання ', 'Study')
+	}
+	# The same key for another user is no conflict.
+	theirs = earlier.objects.create(user_id=other_user.pk, name="Здоров'я")
+	quest = Quest.objects.create(
+		user=user,
+		title='Stays in its category',
+		quest_type=Quest.QuestType.DAILY,
+		xp_reward=25,
+		category_id=rows['Study'],
+	)
+
+	migrate_categories_to(CATEGORY_KEY)
+
+	assert dict(
+		QuestCategory.objects.filter(user=user).values_list('name', 'category_key')
+	) == {
+		'Здоров\u2019я': "здоров'я",
+		' Навчання ': 'навчання',
+		'Study': 'study',
+	}
+	assert QuestCategory.objects.get(pk=theirs.pk).category_key == "здоров'я"
+	with pytest.raises(IntegrityError), transaction.atomic():
+		QuestCategory.objects.create(user=user, name="Здоров'я")
+
+	earlier = migrate_categories_to(BEFORE_CATEGORY_KEY)
+
+	assert 'category_key' not in category_columns()
+	# Going back changes no name and takes the uniqueness with it.
+	assert set(earlier.objects.filter(user_id=user.pk).values_list('name', flat=True)) == {
+		'Здоров\u2019я',
+		' Навчання ',
+		'Study',
+	}
+	assert Quest.objects.values_list('category_id', flat=True).get(pk=quest.pk) == rows['Study']
+	earlier.objects.create(user_id=user.pk, name="Здоров'я")
+	earlier.objects.filter(user_id=user.pk, name="Здоров'я").delete()
+
+	migrate_categories_to(CATEGORY_KEY)
+
+	assert QuestCategory.objects.get(pk=rows['Study']).category_key == 'study'
+
+
+def test_the_category_key_migration_stops_with_a_list_of_the_duplicates(
+	user,
+	other_user,
+	categories_before_the_key,
+):
+	from django.db import connection
+	from django.db.migrations.recorder import MigrationRecorder
+
+	earlier = categories_before_the_key
+	plain = earlier.objects.create(user_id=user.pk, name="Здоров'я")
+	typed = earlier.objects.create(user_id=user.pk, name='Здоров\u2019я')
+	earlier.objects.create(user_id=other_user.pk, name="Здоров'я")
+
+	with pytest.raises(RuntimeError) as refusal:
+		migrate_categories_to(CATEGORY_KEY)
+
+	message = str(refusal.value)
+	assert f'user {user.pk}:' in message
+	assert f'user {other_user.pk}:' not in message
+	assert str(plain.pk) in message
+	assert str(typed.pk) in message
+	assert 'Здоров\u2019я' in message
+	# Stopped before anything stuck: no column, and not recorded as applied.
+	assert 'category_key' not in category_columns()
+	assert CATEGORY_KEY not in MigrationRecorder(connection).applied_migrations()
+
+	# As the message says: rename, and run it again.
+	earlier.objects.filter(pk=typed.pk).update(name='Здоров\u2019я 2')
+	migrate_categories_to(CATEGORY_KEY)
+
+	assert QuestCategory.objects.get(pk=typed.pk).category_key == "здоров'я 2"

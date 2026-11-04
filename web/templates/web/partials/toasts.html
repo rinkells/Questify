@@ -1,0 +1,1 @@
+{% if toasts %}<div hx-swap-oob="beforeend:#toasts">{% for toast in toasts %}<div class="toast toast--{{ toast.kind }}">{{ toast.text }}</div>{% endfor %}</div>{% endif %}

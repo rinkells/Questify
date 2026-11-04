@@ -1,9 +1,11 @@
 import importlib
+from io import StringIO
 from unittest.mock import Mock, patch
 
 import pytest
 from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from rest_framework.test import APIClient
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.recorder import MigrationRecorder
@@ -724,3 +726,137 @@ def test_achievement_without_condition_config_is_refused():
             name='Welcome',
             condition_type=Achievement.ConditionType.QUEST_COUNT,
         )
+
+
+def seed_achievements():
+    out = StringIO()
+    call_command('seed_achievements', stdout=out)
+    return out.getvalue()
+
+
+def test_seed_achievements_creates_the_translated_row(achievement_user):
+    assert 'Created 1 achievement(s), updated 0' in seed_achievements()
+
+    client = APIClient()
+    client.force_authenticate(achievement_user)
+    assert client.get('/api/achievements/').json()['results'] == [{
+        'id': Achievement.objects.get().pk,
+        'name': 'Переможець босів',
+        'description': 'Переможи свого першого боса.',
+        'icon': 'crossed-swords',
+        'is_hidden': False,
+        'condition_type': 'bosses_defeated_count',
+    }]
+
+
+def test_seed_achievements_translates_the_row_it_created_in_place(achievement_user):
+    earlier = Achievement.objects.create(
+        name='Boss Slayer',
+        description='Defeat your first boss.',
+        icon='crossed-swords',
+        condition_type=Achievement.ConditionType.BOSSES_DEFEATED_COUNT,
+        condition_config={'threshold': 1},
+    )
+    earned = UserAchievement.objects.create(
+        user=achievement_user,
+        achievement=earlier,
+    )
+
+    assert 'Created 0 achievement(s), updated 1' in seed_achievements()
+
+    earlier.refresh_from_db()
+    assert earlier.name == 'Переможець босів'
+    assert earlier.description == 'Переможи свого першого боса.'
+    assert Achievement.objects.count() == 1
+    # Whoever has it keeps it.
+    assert UserAchievement.objects.get(pk=earned.pk).achievement == earlier
+
+
+def test_seed_achievements_runs_again_brings_back_texts_and_leaves_the_logic(db):
+    seed_achievements()
+    Achievement.objects.update(
+        description='Edited in the admin.',
+        icon='changed',
+        is_hidden=True,
+        condition_type=Achievement.ConditionType.QUEST_COUNT,
+        condition_config={'threshold': 5},
+    )
+
+    assert 'Created 0 achievement(s), updated 1' in seed_achievements()
+
+    achievement = Achievement.objects.get()
+    assert achievement.description == 'Переможи свого першого боса.'
+    assert achievement.icon == 'changed'
+    assert achievement.is_hidden
+    assert achievement.condition_type == 'quest_count'
+    assert achievement.condition_config == {'threshold': 5}
+
+
+def test_seed_achievements_copes_with_names_that_are_not_unique(db):
+    for _ in range(2):
+        Achievement.objects.create(
+            name='Boss Slayer',
+            condition_type=Achievement.ConditionType.BOSSES_DEFEATED_COUNT,
+            condition_config={'threshold': 1},
+        )
+
+    # One of the two becomes the seeded row; the rerun then finds it by its new name.
+    assert 'updated 1' in seed_achievements()
+    assert 'updated 0' in seed_achievements()
+
+    assert Achievement.objects.filter(name='Переможець босів').count() == 1
+    assert Achievement.objects.filter(name='Boss Slayer').count() == 1
+
+
+TYPED_NAMES = ["Здоров'я", 'Здоров\u2019я', 'Здоров\u02bcя', "ЗДОРОВ'Я"]
+
+
+@pytest.mark.parametrize('typed', TYPED_NAMES)
+@pytest.mark.parametrize('configured', ["Здоров'я", 'Здоров\u2019я'])
+def test_any_apostrophe_counts_for_a_category_achievement(
+    achievement_user,
+    typed,
+    configured,
+):
+    category = QuestCategory.objects.create(user=achievement_user, name=typed)
+    create_completed_quest(achievement_user, category)
+    config = {'category': configured, 'threshold': 1}
+    context = AchievementEvaluationContext(
+        completed_quests_by_category=selectors.completed_counts_by_category(
+            achievement_user.id,
+        ),
+    )
+
+    evaluator = QuestCountByCategoryEvaluator()
+    assert evaluator.evaluate(achievement_user, config)
+    assert evaluator.evaluate_with_context(achievement_user, config, context)
+
+
+@pytest.mark.parametrize('typed', ['Здоров\u2019я', 'Здоров\u02bcя'])
+def test_a_quest_with_a_typographic_apostrophe_unlocks_the_achievement(
+    achievement_user,
+    typed,
+):
+    achievement = Achievement.objects.create(
+        name='Здоровий',
+        condition_type=Achievement.ConditionType.QUEST_COUNT_BY_CATEGORY,
+        condition_config={'category': "Здоров'я", 'threshold': 1},
+    )
+    quest = Quest.objects.create(
+        user=achievement_user,
+        category=QuestCategory.objects.create(user=achievement_user, name=typed),
+        title='A quest',
+        quest_type=Quest.QuestType.ONE_TIME,
+        xp_reward=50,
+    )
+    client = APIClient()
+    client.force_authenticate(achievement_user)
+
+    response = client.post(f'/api/quests/{quest.id}/complete/')
+
+    assert response.status_code == 200
+    assert response.json()['achievements_unlocked'] == [achievement.id]
+    assert UserAchievement.objects.filter(
+        user=achievement_user,
+        achievement=achievement,
+    ).exists()

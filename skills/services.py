@@ -165,6 +165,8 @@ REQUIREMENT_EVALUATORS = {
 class SkillUnlock:
     user_skill: UserSkill
     achievements_unlocked: list[int]
+    # False when the user already had the skill and nothing happened.
+    created: bool = True
 
 
 class SkillService:
@@ -239,6 +241,7 @@ class SkillService:
             return SkillUnlock(
                 user_skill=UserSkill.objects.get(user=user, skill=skill),
                 achievements_unlocked=[],
+                created=False,
             )
         progress = [
             context.progress(requirement)

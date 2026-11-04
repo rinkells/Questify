@@ -102,6 +102,7 @@ class BossViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
         request=None,
         responses={
             204: None,
+            400: DetailSerializer,
             404: DetailSerializer,
             409: DetailSerializer,
         },
@@ -120,4 +121,9 @@ class BossViewSet(OwnerViewSetMixin, viewsets.ModelViewSet):
             raise Http404 from None
         except BossConflictError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except BossStepError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)

@@ -1,0 +1,24 @@
+{% extends "web/base.html" %}
+{% block title %}Реєстрація{% endblock %}
+{% block page %}
+<main class="auth">
+  {% include "web/partials/messages.html" %}
+  <section class="card auth__card">
+    <div>
+      <h1 class="title">Реєстрація</h1>
+      <p class="subtitle">Створи героя і почни свій перший квест.</p>
+    </div>
+    {% if page_error %}<div class="alert alert--error" role="alert">{{ page_error }}</div>{% endif %}
+    {% for error in errors.non_field_errors %}<div class="alert alert--error" role="alert">{{ error }}</div>{% endfor %}
+    <form class="form" method="post" action="{% url 'web:register' %}">
+      {% csrf_token %}
+      {# Filled by app.js from Intl; the server checks it and falls back to UTC. #}
+      <input type="hidden" name="timezone" value="{{ form_values.timezone }}" data-browser-timezone>
+      {% include "web/partials/field.html" with name="username" label="Ім’я користувача" value=form_values.username autocomplete="username" maxlength=150 field_errors=errors.username %}
+      {% include "web/partials/field.html" with name="password" label="Пароль" type="password" autocomplete="new-password" maxlength=128 hint="Щонайменше 8 символів, не лише цифри." field_errors=errors.password %}
+      <button class="btn btn--primary btn--block" type="submit">Зареєструватися</button>
+    </form>
+    <p class="auth__switch">Уже є акаунт? <a href="{% url 'web:login' %}">Увійти</a></p>
+  </section>
+</main>
+{% endblock %}

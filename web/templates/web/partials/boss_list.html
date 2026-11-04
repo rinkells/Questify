@@ -1,0 +1,21 @@
+{# What every action replaces whole: a step attached or detached changes what every other boss can take. #}
+<div class="boss-list" id="boss-list">
+  {% if list_error %}<div class="alert alert--error" role="alert">{{ list_error }}</div>{% endif %}
+  {% if active_cards %}
+  <ul class="boss-grid">
+    {% for card in active_cards %}<li class="boss-grid__item">{% include "web/partials/boss_card.html" %}</li>
+    {% endfor %}
+  </ul>
+  {% elif not defeated_cards %}
+  <div class="card card--compact">
+    <p>Босів поки немає. Створи першого: велику мету, яку перемагаєш разовими квестами.</p>
+  </div>
+  {% endif %}
+  {% if defeated_cards %}
+  <h2 class="section__label">Переможені</h2>
+  <ul class="boss-grid">
+    {% for card in defeated_cards %}<li class="boss-grid__item">{% include "web/partials/boss_card.html" %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>

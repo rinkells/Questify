@@ -3,6 +3,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
 from rest_framework.authtoken.serializers import AuthTokenSerializer
+from rest_framework.exceptions import ErrorDetail
 
 
 User = get_user_model()
@@ -69,7 +70,12 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 		try:
 			password_validation.validate_password(password, user=candidate_user)
 		except DjangoValidationError as exc:
-			raise serializers.ValidationError(exc.messages) from exc
+			# The same texts as exc.messages, keeping each validator's code.
+			raise serializers.ValidationError([
+				ErrorDetail(message, code=error.code)
+				for error in exc.error_list
+				for message in error.messages
+			]) from exc
 		return password
 
 	def validate_username(self, username):
@@ -79,6 +85,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 		if User.objects.filter(username__iexact=username).exists():
 			raise serializers.ValidationError(
 				'A user with that username already exists.',
+				code='username_taken',
 			)
 		return username
 
@@ -89,5 +96,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 		except IntegrityError as exc:
 			# Two concurrent registrations can both pass validation.
 			raise serializers.ValidationError({
-				'username': ['A user with that username already exists.'],
+				'username': [ErrorDetail(
+					'A user with that username already exists.',
+					code='username_taken',
+				)],
 			}) from exc
